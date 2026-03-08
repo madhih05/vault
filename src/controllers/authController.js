@@ -19,7 +19,6 @@ async function register(req, res) {
         const passwordHash = await hashPassword(password);
         const newUser = new User({
             username,
-            password: passwordHash,
             passwordHash,
         });
 
@@ -29,7 +28,9 @@ async function register(req, res) {
         return res.status(201).json({ message: "User securely created." });
     } catch (error) {
         logger.error("Registration error", { message: error.message });
-        return res.status(500).json({ error: "Server error during registration." });
+        return res
+            .status(500)
+            .json({ error: "Server error during registration." });
     }
 }
 
@@ -42,7 +43,7 @@ async function login(req, res) {
             return res.status(400).json({ error: "Invalid credentials." });
         }
 
-        const storedPasswordHash = user.password || user.passwordHash;
+        const storedPasswordHash = user.passwordHash;
         const isMatch = await passwordsMatch(password, storedPasswordHash);
         if (!isMatch) {
             return res.status(400).json({ error: "Invalid credentials." });
@@ -77,8 +78,11 @@ async function changePassword(req, res) {
             return res.status(404).json({ error: "User not found." });
         }
 
-        const storedPasswordHash = user.password || user.passwordHash;
-        const isMatch = await passwordsMatch(currentPassword, storedPasswordHash);
+        const storedPasswordHash = user.passwordHash;
+        const isMatch = await passwordsMatch(
+            currentPassword,
+            storedPasswordHash,
+        );
         if (!isMatch) {
             logger.warn(
                 "Failed password change attempt - Incorrect current password",
@@ -86,11 +90,12 @@ async function changePassword(req, res) {
                     username: user.username,
                 },
             );
-            return res.status(400).json({ error: "Incorrect current password." });
+            return res
+                .status(400)
+                .json({ error: "Incorrect current password." });
         }
 
         const updatedPasswordHash = await hashPassword(newPassword);
-        user.password = updatedPasswordHash;
         user.passwordHash = updatedPasswordHash;
         await user.save();
 
@@ -128,14 +133,15 @@ async function resetWithKey(req, res) {
 
         const keyMatches = await bcrypt.compare(recoveryKey, user.recoveryKey);
         if (!keyMatches) {
-            logger.warn("Password reset with recovery key failed", { username });
+            logger.warn("Password reset with recovery key failed", {
+                username,
+            });
             return res
                 .status(400)
                 .json({ error: "Invalid request or credentials." });
         }
 
         const updatedPasswordHash = await bcrypt.hash(newPassword, 10);
-        user.password = updatedPasswordHash;
         user.passwordHash = updatedPasswordHash;
         await user.save();
 

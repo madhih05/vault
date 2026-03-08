@@ -1,9 +1,12 @@
 const File = require("../models/File");
+const fs = require("fs");
+const mongoose = require("mongoose");
 const logger = require("../logger");
 const { drive, folderId } = require("../config/googleDrive");
-const { bufferToStream } = require("../helpers/stream");
 
 async function uploadFile(req, res) {
+    const tempFilePath = req.file?.path;
+
     try {
         if (!req.file) {
             logger.warn("Upload attempted without a file");
@@ -16,8 +19,6 @@ async function uploadFile(req, res) {
             fileSize: req.file.size,
         });
 
-        const bufferStream = bufferToStream(req.file.buffer);
-
         const driveResponse = await drive.files.create({
             requestBody: {
                 name: req.file.originalname,
@@ -25,7 +26,7 @@ async function uploadFile(req, res) {
             },
             media: {
                 mimeType: req.file.mimetype,
-                body: bufferStream,
+                body: fs.createReadStream(tempFilePath),
             },
             fields: "id, name, webViewLink, thumbnailLink",
         });
@@ -64,6 +65,17 @@ async function uploadFile(req, res) {
         return res.status(500).json({
             error: "Failed to upload file to the vault.",
         });
+    } finally {
+        if (tempFilePath && fs.existsSync(tempFilePath)) {
+            try {
+                fs.unlinkSync(tempFilePath);
+            } catch (cleanupError) {
+                logger.warn("Failed to clean up temporary upload file", {
+                    filePath: tempFilePath,
+                    message: cleanupError.message,
+                });
+            }
+        }
     }
 }
 
@@ -98,6 +110,11 @@ async function listFiles(req, res) {
 async function viewFile(req, res) {
     try {
         const fileId = req.params.id;
+
+        if (!mongoose.Types.ObjectId.isValid(fileId)) {
+            return res.status(400).json({ error: "Invalid file ID." });
+        }
+
         const fileRecord = await File.findById(fileId);
 
         if (!fileRecord) {
@@ -145,6 +162,11 @@ async function viewFile(req, res) {
 async function deleteFile(req, res) {
     try {
         const fileId = req.params.id;
+
+        if (!mongoose.Types.ObjectId.isValid(fileId)) {
+            return res.status(400).json({ error: "Invalid file ID." });
+        }
+
         logger.info("Delete request received", {
             dbId: fileId,
             username: req.user.username,
