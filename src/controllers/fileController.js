@@ -4,6 +4,10 @@ const mongoose = require("mongoose");
 const logger = require("../logger");
 const { drive, folderId } = require("../config/googleDrive");
 
+function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 async function uploadFile(req, res) {
     const tempFilePath = req.file?.path;
 
@@ -81,19 +85,65 @@ async function uploadFile(req, res) {
 
 async function listFiles(req, res) {
     try {
+        const page = Number.parseInt(req.query.page, 10) || 1;
+        const limit = Number.parseInt(req.query.limit, 10) || 20;
+        const fileType = req.query.fileType?.trim();
+        const fileName = req.query.fileName?.trim();
+
+        const filter = {};
+
+        if (fileType) {
+            filter.mimeType = {
+                $regex: escapeRegExp(fileType),
+                $options: "i",
+            };
+        }
+
+        if (fileName) {
+            filter.originalName = {
+                $regex: escapeRegExp(fileName),
+                $options: "i",
+            };
+        }
+
+        const skip = (page - 1) * limit;
+
         logger.info("Fetching gallery for user", {
             username: req.user.username,
+            page,
+            limit,
+            fileType,
+            fileName,
         });
 
-        const files = await File.find().sort({ uploadDate: -1 });
+        const [files, total] = await Promise.all([
+            File.find(filter)
+                .sort({ uploadDate: -1, _id: -1 })
+                .skip(skip)
+                .limit(limit),
+            File.countDocuments(filter),
+        ]);
+
+        const totalPages = Math.ceil(total / limit);
 
         logger.info("Gallery fetched successfully", {
             fileCount: files.length,
+            total,
+            page,
+            limit,
         });
 
         return res.status(200).json({
             success: true,
             files,
+            pagination: {
+                page,
+                limit,
+                total,
+                totalPages,
+                hasNextPage: page < totalPages,
+                hasPrevPage: page > 1,
+            },
         });
     } catch (error) {
         logger.error("Failed to fetch gallery", {

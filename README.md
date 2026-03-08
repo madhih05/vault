@@ -294,9 +294,21 @@ Possible errors:
 
 Return all file metadata records sorted by newest upload first.
 
+Sorting behavior:
+
+- Primary sort: `uploadDate` descending
+- Secondary sort (tie-breaker): `_id` descending
+
 Headers:
 
 - `x-auth-token: <jwt>`
+
+Query params (all optional):
+
+- `page` (integer, >= 1, default: `1`)
+- `limit` (integer, 1 to 100, default: `20`)
+- `fileType` (string, case-insensitive partial match against `mimeType`)
+- `fileName` (string, case-insensitive partial match against `originalName`)
 
 Request body: none.
 
@@ -318,12 +330,29 @@ Success response:
 				"uploadDate": "2026-03-09T00:00:00.000Z",
 				"__v": 0
 			}
-		]
+		],
+		"pagination": {
+			"page": 1,
+			"limit": 20,
+			"total": 42,
+			"totalPages": 3,
+			"hasNextPage": true,
+			"hasPrevPage": false
+		}
 	}
 	```
 
+Example request:
+
+- `GET /api/files?page=1&limit=10&fileType=image&fileName=invoice`
+
+Pagination edge case:
+
+- When no records match, `files` is empty and `pagination.totalPages` is `0`.
+
 Possible errors:
 
+- `400 { "error": "Validation failed.", "details": [...] }`
 - `401 { "error": "Access denied. No token provided." }`
 - `401 { "error": "Invalid or expired token." }`
 - `500 { "error": "Could not retrieve the vault contents." }`
