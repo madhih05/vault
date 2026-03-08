@@ -6,10 +6,16 @@ const userSchema = new mongoose.Schema({
         required: true,
         unique: true,
     },
-    passwordHash: {
+    password: {
         type: String,
         required: true,
-    }, // We will encrypt/hash this in the next phase!
+    },
+    passwordHash: {
+        type: String,
+    },
+    recoveryKey: {
+        type: String,
+    },
 });
 
 module.exports = mongoose.model("User", userSchema);
