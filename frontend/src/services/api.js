@@ -1,8 +1,31 @@
 import axios from "axios";
 
 const TOKEN_STORAGE_KEY = "vault_jwt";
-export const API_BASE_URL =
-    import.meta.env.VITE_API_BASE_URL || "http://localhost:3000";
+
+function normalizeApiBaseUrl(rawBaseUrl) {
+    const normalized = (rawBaseUrl || "https://secretvault.madhih.in").replace(
+        /\/+$/,
+        "",
+    );
+
+    if (normalized.endsWith("/api")) {
+        return normalized;
+    }
+
+    return `${normalized}/api`;
+}
+
+export const API_BASE_URL = normalizeApiBaseUrl(
+    import.meta.env.VITE_API_BASE_URL,
+);
+
+export function buildApiUrl(pathname) {
+    const pathWithLeadingSlash = pathname.startsWith("/")
+        ? pathname
+        : `/${pathname}`;
+
+    return `${API_BASE_URL}${pathWithLeadingSlash}`;
+}
 
 export const api = axios.create({
     baseURL: API_BASE_URL,
@@ -36,7 +59,7 @@ api.interceptors.request.use((config) => {
 });
 
 export async function login({ username, password }) {
-    const response = await api.post("/api/login", {
+    const response = await api.post("/login", {
         username,
         password,
     });
@@ -56,7 +79,7 @@ export async function listFiles({
     fileType = "",
     fileName = "",
 } = {}) {
-    const response = await api.get("/api/files", {
+    const response = await api.get("/files", {
         params: {
             page,
             limit,
@@ -68,26 +91,60 @@ export async function listFiles({
     return response.data;
 }
 
-export async function uploadVaultFile(file) {
-    const formData = new FormData();
-    formData.append("vaultFile", file);
+export async function uploadVaultFile(file, thumbnailBlob) {
+    const postUpload = async (includeThumbnail) => {
+        const formData = new FormData();
+        formData.append("vaultFile", file);
 
-    const response = await api.post("/api/upload", formData, {
-        headers: {
-            "Content-Type": "multipart/form-data",
-        },
-    });
+        if (includeThumbnail && thumbnailBlob) {
+            const baseName = (file?.name || "file").replace(/\.[^.]+$/, "");
+            formData.append(
+                "vaultThumbnail",
+                thumbnailBlob,
+                `${baseName}-thumb.jpg`,
+            );
+        }
+
+        return api.post("/upload", formData, {
+            headers: {
+                "Content-Type": "multipart/form-data",
+            },
+        });
+    };
+
+    const isUnexpectedFieldError = (error) => {
+        const message =
+            error?.response?.data?.error ||
+            error?.response?.data?.message ||
+            error?.message ||
+            "";
+
+        return /unexpected field/i.test(String(message));
+    };
+
+    let response;
+
+    try {
+        response = await postUpload(true);
+    } catch (error) {
+        // Some older deployments only accept `vaultFile`; retry without thumbnail.
+        if (!thumbnailBlob || !isUnexpectedFieldError(error)) {
+            throw error;
+        }
+
+        response = await postUpload(false);
+    }
 
     return response.data;
 }
 
 export async function deleteVaultFile(fileId) {
-    const response = await api.delete(`/api/files/${fileId}`);
+    const response = await api.delete(`/files/${fileId}`);
     return response.data;
 }
 
 export async function fetchSecureFileBlob(fileId) {
-    const response = await api.get(`/api/files/${fileId}/view`, {
+    const response = await api.get(`/files/${fileId}/view`, {
         responseType: "blob",
     });
 

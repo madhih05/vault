@@ -85,6 +85,142 @@ const isUnrecognizedMimeType = (mimeType = '') => {
   )
 }
 
+const THUMBNAIL_SIZE = 150
+const THUMBNAIL_QUALITY = 0.78
+
+const isThumbnailEligibleMimeType = (mimeType = '') => {
+  const normalizedMimeType = normalizeMimeType(mimeType)
+  return normalizedMimeType.startsWith('image/') || normalizedMimeType.startsWith('video/')
+}
+
+const blobToObjectUrl = (blob) => URL.createObjectURL(blob)
+
+const canvasToJpegBlob = (canvas) =>
+  new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) {
+          reject(new Error('Failed to encode thumbnail image.'))
+          return
+        }
+
+        resolve(blob)
+      },
+      'image/jpeg',
+      THUMBNAIL_QUALITY,
+    )
+  })
+
+const drawSquareThumbnail = (source, width, height) => {
+  const side = Math.min(width, height)
+  const offsetX = Math.max(0, (width - side) / 2)
+  const offsetY = Math.max(0, (height - side) / 2)
+
+  const canvas = document.createElement('canvas')
+  canvas.width = THUMBNAIL_SIZE
+  canvas.height = THUMBNAIL_SIZE
+
+  const context = canvas.getContext('2d')
+  if (!context) {
+    throw new Error('Canvas context is not available in this browser.')
+  }
+
+  context.drawImage(
+    source,
+    offsetX,
+    offsetY,
+    side,
+    side,
+    0,
+    0,
+    THUMBNAIL_SIZE,
+    THUMBNAIL_SIZE,
+  )
+
+  return canvas
+}
+
+const createImageThumbnailBlob = async (file) => {
+  const objectUrl = blobToObjectUrl(file)
+
+  try {
+    const image = await new Promise((resolve, reject) => {
+      const imageElement = new Image()
+
+      imageElement.onload = () => resolve(imageElement)
+      imageElement.onerror = () => reject(new Error('Failed to load image for thumbnail generation.'))
+      imageElement.src = objectUrl
+    })
+
+    const canvas = drawSquareThumbnail(image, image.naturalWidth, image.naturalHeight)
+    return await canvasToJpegBlob(canvas)
+  } finally {
+    URL.revokeObjectURL(objectUrl)
+  }
+}
+
+const createVideoThumbnailBlob = async (file) => {
+  const objectUrl = blobToObjectUrl(file)
+  const video = document.createElement('video')
+  video.preload = 'metadata'
+  video.muted = true
+  video.playsInline = true
+
+  try {
+    await new Promise((resolve, reject) => {
+      const cleanup = () => {
+        video.onloadeddata = null
+        video.onerror = null
+        video.onseeked = null
+      }
+
+      video.onloadeddata = () => {
+        const safeSeekTime = Number.isFinite(video.duration)
+          ? Math.min(1, Math.max(0, video.duration / 4))
+          : 0
+
+        video.currentTime = safeSeekTime
+      }
+
+      video.onseeked = () => {
+        cleanup()
+        resolve()
+      }
+
+      video.onerror = () => {
+        cleanup()
+        reject(new Error('Failed to load video frame for thumbnail generation.'))
+      }
+
+      video.src = objectUrl
+    })
+
+    const canvas = drawSquareThumbnail(video, video.videoWidth, video.videoHeight)
+    return await canvasToJpegBlob(canvas)
+  } finally {
+    video.pause()
+    video.removeAttribute('src')
+    video.load()
+    URL.revokeObjectURL(objectUrl)
+  }
+}
+
+const createUploadThumbnail = async (file) => {
+  if (!isThumbnailEligibleMimeType(file?.type || '')) {
+    return null
+  }
+
+  if (file.type.startsWith('image/')) {
+    return createImageThumbnailBlob(file)
+  }
+
+  if (file.type.startsWith('video/')) {
+    return createVideoThumbnailBlob(file)
+  }
+
+  return null
+}
+
 function VaultDashboard() {
   const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState('gallery')
@@ -207,7 +343,15 @@ function VaultDashboard() {
     setError('')
 
     try {
-      await uploadVaultFile(file)
+      let thumbnailBlob = null
+
+      try {
+        thumbnailBlob = await createUploadThumbnail(file)
+      } catch (thumbnailError) {
+        console.warn('Thumbnail generation failed. Uploading without custom thumbnail.', thumbnailError)
+      }
+
+      await uploadVaultFile(file, thumbnailBlob)
       await loadFiles()
     } catch (uploadError) {
       setError(
@@ -309,37 +453,37 @@ function VaultDashboard() {
 
   return (
     <main
-      className="min-h-screen bg-gradient-to-b from-stone-100 via-cyan-50 to-stone-100 px-4 py-4 sm:px-6"
+      className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 px-3 py-4 sm:px-6"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
       <div className="mx-auto max-w-6xl">
-        <header className="mb-5 rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm backdrop-blur-sm sm:p-5">
+        <header className="mb-4 rounded-2xl border border-slate-700/70 bg-slate-900/80 p-4 shadow-sm backdrop-blur-sm sm:mb-5 sm:p-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="text-xs uppercase tracking-[0.2em] text-cyan-700">Secure Vault</p>
-              <h1 className="font-serif text-2xl text-slate-900 sm:text-3xl">Dashboard</h1>
+              <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">Secure Vault</p>
+              <h1 className="font-serif text-2xl text-slate-100 sm:text-3xl">Dashboard</h1>
             </div>
             <button
               type="button"
               onClick={handleLogout}
-              className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100"
+              className="rounded-lg border border-slate-600 px-3 py-2 text-sm font-semibold text-slate-200 transition hover:bg-slate-800"
             >
               Logout
             </button>
           </div>
 
-          <nav className="mt-4 flex gap-2">
+          <nav className="mt-4 flex gap-2 overflow-x-auto pb-1">
             {Object.entries(TAB_LABELS).map(([tabValue, tabLabel]) => (
               <button
                 key={tabValue}
                 type="button"
                 onClick={() => handleTabChange(tabValue)}
-                className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
+                className={`whitespace-nowrap rounded-xl px-3 py-2 text-sm font-semibold transition sm:px-4 ${
                   activeTab === tabValue
-                    ? 'bg-slate-900 text-white'
-                    : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
+                    ? 'bg-cyan-500 text-slate-950'
+                    : 'border border-slate-600 bg-slate-900 text-slate-300 hover:bg-slate-800'
                 }`}
               >
                 {tabLabel}
@@ -348,7 +492,7 @@ function VaultDashboard() {
           </nav>
         </header>
 
-        <section className="rounded-2xl border border-slate-200 bg-white/85 p-4 shadow-sm backdrop-blur-sm sm:p-5">
+        <section className="rounded-2xl border border-slate-700/70 bg-slate-900/85 p-3 shadow-sm backdrop-blur-sm sm:p-5">
           {activeTab === 'gallery' ? (
             <GalleryView
               files={visibleFiles}
@@ -382,10 +526,10 @@ function VaultDashboard() {
       </div>
 
       {isDragOver ? (
-        <div className="pointer-events-none fixed inset-0 z-[65] grid place-items-center bg-cyan-950/20 p-4">
-          <div className="w-full max-w-xl rounded-2xl border-2 border-dashed border-cyan-500 bg-white/95 px-6 py-10 text-center shadow-xl">
-            <p className="text-lg font-semibold text-cyan-800">Drop file to upload</p>
-            <p className="mt-2 text-sm text-slate-600">Supported types are validated by the backend.</p>
+        <div className="pointer-events-none fixed inset-0 z-[65] grid place-items-center bg-slate-950/60 p-4">
+          <div className="w-full max-w-xl rounded-2xl border-2 border-dashed border-cyan-400 bg-slate-900/95 px-6 py-8 text-center shadow-xl sm:py-10">
+            <p className="text-lg font-semibold text-cyan-300">Drop file to upload</p>
+            <p className="mt-2 text-sm text-slate-300">Supported types are validated by the backend.</p>
           </div>
         </div>
       ) : null}

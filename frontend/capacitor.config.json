@@ -1,0 +1,5 @@
+{
+  "appId": "com.msvault.app",
+  "appName": "secretvault",
+  "webDir": "dist"
+}

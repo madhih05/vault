@@ -41,9 +41,9 @@ function LoginPage() {
   }
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-stone-100 via-amber-50 to-sky-100 px-4 py-8 sm:px-6">
-      <div className="mx-auto flex min-h-[90vh] w-full max-w-6xl items-center justify-center">
-        <section className="grid w-full overflow-hidden rounded-3xl border border-stone-200 bg-white/85 shadow-2xl backdrop-blur-sm lg:grid-cols-[1.05fr_0.95fr]">
+    <main className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 px-4 py-6 sm:px-6 sm:py-8">
+      <div className="mx-auto flex min-h-[92vh] w-full max-w-6xl items-center justify-center">
+        <section className="grid w-full overflow-hidden rounded-3xl border border-slate-700/70 bg-slate-900/80 shadow-2xl backdrop-blur-sm lg:grid-cols-[1.05fr_0.95fr]">
           <div className="hidden bg-slate-900 p-10 text-slate-100 lg:flex lg:flex-col lg:justify-between">
             <div>
               <p className="text-xs uppercase tracking-[0.25em] text-cyan-300">Secure Node</p>
@@ -58,13 +58,13 @@ function LoginPage() {
             <p className="text-xs text-slate-400">Session token is stored in sessionStorage and auto-sent as x-auth-token.</p>
           </div>
 
-          <div className="p-6 sm:p-10">
-            <h2 className="font-serif text-3xl text-slate-900">Sign in</h2>
-            <p className="mt-2 text-sm text-slate-600">Authenticate to open your private vault dashboard.</p>
+          <div className="p-5 sm:p-8 lg:p-10">
+            <h2 className="font-serif text-3xl text-slate-100">Sign in</h2>
+            <p className="mt-2 text-sm text-slate-400">Authenticate to open your private vault dashboard.</p>
 
             <form className="mt-8 space-y-5" onSubmit={handleSubmit}>
               <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="username">
+                <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="username">
                   Username
                 </label>
                 <input
@@ -74,13 +74,13 @@ function LoginPage() {
                   autoComplete="username"
                   value={formState.username}
                   onChange={handleInputChange}
-                  className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none transition focus:border-cyan-500 focus:ring-4 focus:ring-cyan-100"
+                  className="w-full rounded-xl border border-slate-600 bg-slate-900 px-4 py-3 text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-cyan-400 focus:ring-4 focus:ring-cyan-900/40"
                   required
                 />
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="password">
+                <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="password">
                   Password
                 </label>
                 <input
@@ -90,19 +90,19 @@ function LoginPage() {
                   autoComplete="current-password"
                   value={formState.password}
                   onChange={handleInputChange}
-                  className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none transition focus:border-cyan-500 focus:ring-4 focus:ring-cyan-100"
+                  className="w-full rounded-xl border border-slate-600 bg-slate-900 px-4 py-3 text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-cyan-400 focus:ring-4 focus:ring-cyan-900/40"
                   required
                 />
               </div>
 
               {errorMessage ? (
-                <p className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">{errorMessage}</p>
+                <p className="rounded-lg border border-red-500/50 bg-red-950/40 px-3 py-2 text-sm text-red-200">{errorMessage}</p>
               ) : null}
 
               <button
                 type="submit"
                 disabled={!canSubmit}
-                className="inline-flex w-full items-center justify-center rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex w-full items-center justify-center rounded-xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {isSubmitting ? 'Authenticating...' : 'Enter Vault'}
               </button>

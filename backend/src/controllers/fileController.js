@@ -116,26 +116,30 @@ function buildContentDisposition(dispositionType, fileName) {
 }
 
 async function uploadFile(req, res) {
-    const tempFilePath = req.file?.path;
+    const uploadedFile = req.files?.vaultFile?.[0] || req.file;
+    const uploadedThumbnail = req.files?.vaultThumbnail?.[0];
+    const tempFilePath = uploadedFile?.path;
+    const tempThumbnailPath = uploadedThumbnail?.path;
 
     try {
-        if (!req.file) {
+        if (!uploadedFile) {
             logger.warn("Upload attempted without a file");
             return res.status(400).json({ error: "No file uploaded." });
         }
 
         logger.info("Receiving upload", {
-            originalName: req.file.originalname,
-            mimeType: req.file.mimetype,
-            fileSize: req.file.size,
-            isRecognizedType: req.file.isRecognizedType,
+            originalName: uploadedFile.originalname,
+            mimeType: uploadedFile.mimetype,
+            fileSize: uploadedFile.size,
+            isRecognizedType: uploadedFile.isRecognizedType,
+            hasCustomThumbnail: Boolean(uploadedThumbnail),
         });
 
-        const resolvedMimeType = resolveMimeType(req.file);
+        const resolvedMimeType = resolveMimeType(uploadedFile);
 
         const driveResponse = await drive.files.create({
             requestBody: {
-                name: req.file.originalname,
+                name: uploadedFile.originalname,
                 parents: [folderId],
             },
             media: {
@@ -145,15 +149,39 @@ async function uploadFile(req, res) {
             fields: "id, name, webViewLink, thumbnailLink",
         });
 
+        let thumbnailDriveResponse = null;
+        if (uploadedThumbnail) {
+            const baseName = path.parse(
+                uploadedFile.originalname || "file",
+            ).name;
+            const thumbnailName = `${baseName}-thumb.jpg`;
+
+            thumbnailDriveResponse = await drive.files.create({
+                requestBody: {
+                    name: thumbnailName,
+                    parents: [folderId],
+                },
+                media: {
+                    mimeType: uploadedThumbnail.mimetype || "image/jpeg",
+                    body: fs.createReadStream(tempThumbnailPath),
+                },
+                fields: "id, webViewLink",
+            });
+        }
+
         logger.info("Drive upload completed", {
-            originalName: req.file.originalname,
+            originalName: uploadedFile.originalname,
             driveFileId: driveResponse.data.id,
+            thumbnailDriveFileId: thumbnailDriveResponse?.data?.id,
         });
 
         const newFileRecord = new File({
             originalName: driveResponse.data.name,
             driveFileId: driveResponse.data.id,
             thumbnailLink: driveResponse.data.thumbnailLink,
+            thumbnailDriveFileId: thumbnailDriveResponse?.data?.id,
+            thumbnailMimeType: uploadedThumbnail?.mimetype || "image/jpeg",
+            thumbnailWebViewLink: thumbnailDriveResponse?.data?.webViewLink,
             webViewLink: driveResponse.data.webViewLink,
             mimeType: resolvedMimeType,
         });
@@ -186,6 +214,17 @@ async function uploadFile(req, res) {
             } catch (cleanupError) {
                 logger.warn("Failed to clean up temporary upload file", {
                     filePath: tempFilePath,
+                    message: cleanupError.message,
+                });
+            }
+        }
+
+        if (tempThumbnailPath && fs.existsSync(tempThumbnailPath)) {
+            try {
+                fs.unlinkSync(tempThumbnailPath);
+            } catch (cleanupError) {
+                logger.warn("Failed to clean up temporary thumbnail file", {
+                    filePath: tempThumbnailPath,
                     message: cleanupError.message,
                 });
             }
@@ -362,25 +401,44 @@ async function getThumbnail(req, res) {
             return res.status(404).json({ error: "File not found." });
         }
 
-        const driveResponse = await drive.files.get({
-            fileId: fileRecord.driveFileId,
-            fields: "thumbnailLink",
+        if (!fileRecord.thumbnailDriveFileId) {
+            return res.status(404).json({
+                error: "No uploaded thumbnail is available for this file.",
+            });
+        }
+
+        const driveResponse = await drive.files.get(
+            {
+                fileId: fileRecord.thumbnailDriveFileId,
+                alt: "media",
+            },
+            {
+                responseType: "stream",
+            },
+        );
+
+        res.setHeader(
+            "Content-Type",
+            fileRecord.thumbnailMimeType || "image/jpeg",
+        );
+        res.setHeader(
+            "Content-Disposition",
+            buildContentDisposition(
+                "inline",
+                `${path.parse(fileRecord.originalName || "thumbnail").name}-thumb.jpg`,
+            ),
+        );
+
+        driveResponse.data.pipe(res);
+
+        driveResponse.data.on("error", (streamError) => {
+            logger.error("Thumbnail stream error", {
+                message: streamError.message,
+                dbId: fileRecord._id,
+            });
         });
 
-        const freshThumbnailLink = driveResponse.data.thumbnailLink;
-
-        if (!freshThumbnailLink) {
-            return res
-                .status(404)
-                .json({ error: "Thumbnail is still processing." });
-        }
-
-        if (fileRecord.thumbnailLink !== freshThumbnailLink) {
-            fileRecord.thumbnailLink = freshThumbnailLink;
-            await fileRecord.save();
-        }
-
-        return res.redirect(freshThumbnailLink);
+        return undefined;
     } catch (error) {
         logger.error("Thumbnail fetch failed", {
             message: error.message,
@@ -410,6 +468,25 @@ async function deleteFile(req, res) {
         logger.info("Deleted from Google Drive", {
             driveFileId: fileRecord.driveFileId,
         });
+
+        if (fileRecord.thumbnailDriveFileId) {
+            try {
+                await drive.files.delete({
+                    fileId: fileRecord.thumbnailDriveFileId,
+                });
+                logger.info("Deleted custom thumbnail from Google Drive", {
+                    thumbnailDriveFileId: fileRecord.thumbnailDriveFileId,
+                });
+            } catch (thumbnailDeleteError) {
+                logger.warn(
+                    "Failed to delete custom thumbnail from Google Drive",
+                    {
+                        thumbnailDriveFileId: fileRecord.thumbnailDriveFileId,
+                        message: thumbnailDeleteError.message,
+                    },
+                );
+            }
+        }
 
         await File.findByIdAndDelete(fileId);
         logger.info("Deleted from Database", { dbId: fileId });

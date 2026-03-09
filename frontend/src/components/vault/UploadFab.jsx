@@ -1,6 +1,6 @@
 function UploadFab({ onFilePicked, isUploading }) {
   return (
-    <label className="fixed bottom-6 right-6 z-40 cursor-pointer">
+    <label className="fixed bottom-4 right-4 z-40 cursor-pointer sm:bottom-6 sm:right-6">
       <input
         type="file"
         className="hidden"
@@ -13,7 +13,7 @@ function UploadFab({ onFilePicked, isUploading }) {
         }}
         disabled={isUploading}
       />
-      <span className="inline-flex min-h-14 min-w-14 items-center justify-center rounded-full bg-cyan-600 px-4 text-2xl font-semibold text-white shadow-lg transition hover:bg-cyan-500">
+      <span className="inline-flex min-h-12 min-w-12 items-center justify-center rounded-full border border-cyan-400/60 bg-cyan-500 px-3 text-2xl font-semibold text-slate-950 shadow-lg transition hover:bg-cyan-400 sm:min-h-14 sm:min-w-14 sm:px-4">
         {isUploading ? '...' : '+'}
       </span>
     </label>

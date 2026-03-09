@@ -61,31 +61,31 @@ function FilterDrawer({
     <>
       <button
         type="button"
-        className="fixed left-0 top-1/2 z-40 -translate-y-1/2 rounded-r-xl bg-slate-900 px-3 py-3 text-sm font-semibold text-white shadow-lg"
+        className="fixed bottom-5 left-4 z-40 rounded-xl border border-slate-600 bg-slate-900 px-3 py-2.5 text-sm font-semibold text-slate-100 shadow-lg md:left-0 md:top-1/2 md:bottom-auto md:-translate-y-1/2 md:rounded-r-xl md:rounded-l-none"
         onClick={onOpen}
       >
         Filter
       </button>
 
       {drawerOpen ? (
-        <div className="fixed inset-0 z-50 bg-slate-900/35" onClick={onClose} aria-hidden="true" />
+        <div className="fixed inset-0 z-50 bg-slate-950/60" onClick={onClose} aria-hidden="true" />
       ) : null}
 
       <aside
-        className={`fixed right-0 top-0 z-50 h-full w-[86vw] max-w-sm border-l border-slate-200 bg-white p-5 shadow-2xl transition-transform duration-300 ${
+        className={`fixed right-0 top-0 z-50 h-full w-[92vw] max-w-sm border-l border-slate-700 bg-slate-900 p-5 shadow-2xl transition-transform duration-300 ${
           drawerOpen ? 'translate-x-0' : 'translate-x-full'
         }`}
       >
         <div className="flex items-center justify-between">
-          <h2 className="font-serif text-2xl text-slate-900">Find Files</h2>
-          <button type="button" onClick={onClose} className="rounded-md px-2 py-1 text-slate-500 hover:bg-slate-100">
+          <h2 className="font-serif text-2xl text-slate-100">Find Files</h2>
+          <button type="button" onClick={onClose} className="rounded-md px-2 py-1 text-slate-400 hover:bg-slate-800">
             Close
           </button>
         </div>
 
         <div className="mt-6 space-y-4">
           <div>
-            <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="fileNameFilter">
+            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="fileNameFilter">
               Search Name
             </label>
             <input
@@ -93,19 +93,19 @@ function FilterDrawer({
               value={searchDraft}
               onChange={(event) => onSearchChange(event.target.value)}
               placeholder="invoice, holiday, note..."
-              className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-cyan-500 focus:ring-4 focus:ring-cyan-100"
+              className="w-full rounded-xl border border-slate-600 bg-slate-900 px-3 py-2.5 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-cyan-400 focus:ring-4 focus:ring-cyan-900/40"
             />
           </div>
 
           <div>
-            <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="fileTypeFilter">
+            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="fileTypeFilter">
               Type
             </label>
             <select
               id="fileTypeFilter"
               value={typeDraft}
               onChange={(event) => onTypeChange(event.target.value)}
-              className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-cyan-500 focus:ring-4 focus:ring-cyan-100"
+              className="w-full rounded-xl border border-slate-600 bg-slate-900 px-3 py-2.5 text-sm text-slate-100 outline-none focus:border-cyan-400 focus:ring-4 focus:ring-cyan-900/40"
             >
               {options.map((option) => (
                 <option key={option.label} value={option.value}>
@@ -119,14 +119,14 @@ function FilterDrawer({
             <button
               type="button"
               onClick={onApply}
-              className="flex-1 rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white transition hover:bg-slate-700"
+              className="flex-1 rounded-xl bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400"
             >
               Apply
             </button>
             <button
               type="button"
               onClick={onReset}
-              className="flex-1 rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100"
+              className="flex-1 rounded-xl border border-slate-600 px-3 py-2 text-sm font-semibold text-slate-200 transition hover:bg-slate-800"
             >
               Reset
             </button>

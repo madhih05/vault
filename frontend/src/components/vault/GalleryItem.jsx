@@ -1,9 +1,9 @@
-import { API_BASE_URL, getToken } from '../../services/api'
+import { buildApiUrl, getToken } from '../../services/api'
 
 function GalleryItem({ file, onOpen }) {
   const token = getToken()
   const thumbnailUrl = token
-    ? `${API_BASE_URL}/api/files/${file._id}/thumbnail?token=${encodeURIComponent(token)}`
+    ? `${buildApiUrl(`/files/${file._id}/thumbnail`)}?token=${encodeURIComponent(token)}`
     : '/fallback-icon.svg'
   const isVideo = file.mimeType.startsWith('video/')
 
@@ -11,7 +11,7 @@ function GalleryItem({ file, onOpen }) {
     <button
       type="button"
       onClick={() => onOpen(file)}
-      className="group relative aspect-square overflow-hidden border border-slate-200/60 bg-slate-100 text-left"
+      className="group relative aspect-square overflow-hidden border border-slate-700/80 bg-slate-800 text-left"
       title={file.originalName}
     >
       <img

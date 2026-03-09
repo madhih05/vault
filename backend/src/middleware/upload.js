@@ -117,11 +117,21 @@ const upload = multer({
     limits: { fileSize: 50 * 1024 * 1024 },
 });
 
-const singleVaultUpload = upload.single("vaultFile");
+const vaultUploadFields = upload.fields([
+    { name: "vaultFile", maxCount: 1 },
+    { name: "vaultThumbnail", maxCount: 1 },
+]);
 
 function handleVaultUpload(req, res, next) {
-    singleVaultUpload(req, res, (error) => {
+    vaultUploadFields(req, res, (error) => {
         if (!error) {
+            const vaultFile = req.files?.vaultFile?.[0];
+
+            // Keep backwards compatibility with handlers that read req.file.
+            if (vaultFile) {
+                req.file = vaultFile;
+            }
+
             return next();
         }
 

@@ -17,5 +17,11 @@ body,
 body {
   margin: 0;
   font-family: 'Manrope', ui-sans-serif, system-ui, sans-serif;
-  color: #0f172a;
+  color: #e2e8f0;
+  background: radial-gradient(circle at 10% 10%, #1e293b 0%, #0f172a 45%, #020617 100%);
+  color-scheme: dark;
+}
+
+#root {
+  min-height: 100vh;
 }

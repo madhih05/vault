@@ -64,8 +64,8 @@ function LightboxModal({ file, onClose, onDelete }) {
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/85 p-4">
-      <div className="w-full max-w-5xl rounded-2xl border border-slate-700 bg-slate-900 p-4 text-slate-100 shadow-2xl">
-        <div className="mb-3 flex items-center justify-between gap-4">
+      <div className="w-full max-w-5xl rounded-2xl border border-slate-700 bg-slate-900 p-3 text-slate-100 shadow-2xl sm:p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 sm:gap-4">
           <h3 className="truncate text-sm font-medium text-slate-200">{file.originalName}</h3>
           <div className="flex items-center gap-2">
             <button
@@ -86,7 +86,7 @@ function LightboxModal({ file, onClose, onDelete }) {
           </div>
         </div>
 
-        <div className="min-h-[50vh] rounded-lg bg-slate-950 p-2">
+        <div className="min-h-[45vh] rounded-lg bg-slate-950 p-2 sm:min-h-[50vh]">
           {loading ? <p className="p-4 text-sm text-slate-300">Loading preview...</p> : null}
           {error ? <p className="p-4 text-sm text-red-300">{error}</p> : null}
 
