@@ -229,8 +229,7 @@ async function listFiles(req, res) {
 
         const skip = (page - 1) * limit;
 
-        logger.info("Fetching gallery for user", {
-            username: req.user.username,
+        logger.info("Fetching vault gallery", {
             page,
             limit,
             fileType,
@@ -400,10 +399,7 @@ async function deleteFile(req, res) {
             return res.status(400).json({ error: "Invalid file ID." });
         }
 
-        logger.info("Delete request received", {
-            dbId: fileId,
-            username: req.user.username,
-        });
+        logger.info("Delete request received", { dbId: fileId });
 
         const fileRecord = await File.findById(fileId);
         if (!fileRecord) {

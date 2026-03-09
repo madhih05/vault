@@ -1,31 +1,8 @@
 import axios from "axios";
 
 const TOKEN_STORAGE_KEY = "vault_jwt";
-
-function normalizeApiBaseUrl(rawBaseUrl) {
-    const normalized = (rawBaseUrl || "http://localhost:3000").replace(
-        /\/+$/,
-        "",
-    );
-
-    if (normalized.endsWith("/api")) {
-        return normalized;
-    }
-
-    return `${normalized}/api`;
-}
-
-export const API_BASE_URL = normalizeApiBaseUrl(
-    import.meta.env.VITE_API_BASE_URL,
-);
-
-export function buildApiUrl(pathname) {
-    const pathWithLeadingSlash = pathname.startsWith("/")
-        ? pathname
-        : `/${pathname}`;
-
-    return `${API_BASE_URL}${pathWithLeadingSlash}`;
-}
+export const API_BASE_URL =
+    import.meta.env.VITE_API_BASE_URL || "http://localhost:3000";
 
 export const api = axios.create({
     baseURL: API_BASE_URL,
@@ -59,7 +36,7 @@ api.interceptors.request.use((config) => {
 });
 
 export async function login({ username, password }) {
-    const response = await api.post("/login", {
+    const response = await api.post("/api/login", {
         username,
         password,
     });
@@ -79,7 +56,7 @@ export async function listFiles({
     fileType = "",
     fileName = "",
 } = {}) {
-    const response = await api.get("/files", {
+    const response = await api.get("/api/files", {
         params: {
             page,
             limit,
@@ -95,7 +72,7 @@ export async function uploadVaultFile(file) {
     const formData = new FormData();
     formData.append("vaultFile", file);
 
-    const response = await api.post("/upload", formData, {
+    const response = await api.post("/api/upload", formData, {
         headers: {
             "Content-Type": "multipart/form-data",
         },
@@ -105,12 +82,12 @@ export async function uploadVaultFile(file) {
 }
 
 export async function deleteVaultFile(fileId) {
-    const response = await api.delete(`/files/${fileId}`);
+    const response = await api.delete(`/api/files/${fileId}`);
     return response.data;
 }
 
 export async function fetchSecureFileBlob(fileId) {
-    const response = await api.get(`/files/${fileId}/view`, {
+    const response = await api.get(`/api/files/${fileId}/view`, {
         responseType: "blob",
     });
 
