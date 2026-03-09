@@ -349,6 +349,49 @@ async function viewFile(req, res) {
     }
 }
 
+async function getThumbnail(req, res) {
+    try {
+        const fileId = req.params.id;
+
+        if (!mongoose.Types.ObjectId.isValid(fileId)) {
+            return res.status(400).json({ error: "Invalid file ID." });
+        }
+
+        const fileRecord = await File.findById(fileId);
+
+        if (!fileRecord) {
+            return res.status(404).json({ error: "File not found." });
+        }
+
+        const driveResponse = await drive.files.get({
+            fileId: fileRecord.driveFileId,
+            fields: "thumbnailLink",
+        });
+
+        const freshThumbnailLink = driveResponse.data.thumbnailLink;
+
+        if (!freshThumbnailLink) {
+            return res
+                .status(404)
+                .json({ error: "Thumbnail is still processing." });
+        }
+
+        if (fileRecord.thumbnailLink !== freshThumbnailLink) {
+            fileRecord.thumbnailLink = freshThumbnailLink;
+            await fileRecord.save();
+        }
+
+        return res.redirect(freshThumbnailLink);
+    } catch (error) {
+        logger.error("Thumbnail fetch failed", {
+            message: error.message,
+            stack: error.stack,
+        });
+
+        return res.status(500).json({ error: "Failed to load thumbnail." });
+    }
+}
+
 async function deleteFile(req, res) {
     try {
         const fileId = req.params.id;
@@ -393,5 +436,6 @@ module.exports = {
     uploadFile,
     listFiles,
     viewFile,
+    getThumbnail,
     deleteFile,
 };

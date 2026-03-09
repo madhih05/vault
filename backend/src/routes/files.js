@@ -7,6 +7,7 @@ const {
     uploadFile,
     listFiles,
     viewFile,
+    getThumbnail,
     deleteFile,
 } = require("../controllers/fileController");
 
@@ -46,6 +47,7 @@ router.get(
     listFiles,
 );
 router.get("/files/:id/view", requireAuth, viewFile);
+router.get("/files/:id/thumbnail", requireAuth, getThumbnail);
 router.delete("/files/:id", requireAuth, deleteFile);
 
 module.exports = router;
