@@ -256,6 +256,23 @@ Recognized MIME types/extensions (used for MIME normalization and preview/downlo
 - `image/jpeg`
 - `image/png`
 - `video/mp4`
+- `video/quicktime` (`.mov`)
+- `video/x-msvideo`, `video/avi`, `video/msvideo` (`.avi`)
+- `video/x-matroska`, `video/matroska`, `video/mkv` (`.mkv`)
+- `video/webm` (`.webm`)
+- `video/x-m4v` (`.m4v`)
+- `video/3gpp` (`.3gp`)
+- `video/3gpp2` (`.3g2`)
+- `audio/mpeg`, `audio/mp3`, `audio/x-mpeg` (`.mp3`)
+- `audio/flac`, `audio/x-flac` (`.flac`)
+- `audio/wav`, `audio/x-wav`, `audio/vnd.wave` (`.wav`)
+- `audio/mp4`, `audio/x-m4a` (`.m4a`)
+- `audio/ogg` (`.ogg`)
+- `audio/opus` (`.opus`)
+- `audio/aac`, `audio/x-aac` (`.aac`)
+- `audio/amr` (`.amr`)
+- `audio/x-ms-wma` (`.wma`)
+- `audio/aiff` (`.aiff`, `.aif`)
 - `application/pdf`
 - `application/msword` (`.doc`)
 - `application/vnd.openxmlformats-officedocument.wordprocessingml.document` (`.docx`)
@@ -388,7 +405,11 @@ Success response:
 - Status: `200`
 - Content type: set from stored/inferred MIME type (fallback `application/octet-stream`)
 - Content disposition:
-	- `inline` for preview-safe types (`image/jpeg`, `image/png`, `video/mp4`, `application/pdf`, `text/plain`, `text/csv`, `application/json`)
+	- `inline` for preview-safe types:
+		- images: `image/jpeg`, `image/png`
+		- video: `video/mp4`, `video/quicktime`, `video/x-msvideo`, `video/avi`, `video/msvideo`, `video/x-matroska`, `video/matroska`, `video/mkv`, `video/webm`, `video/x-m4v`, `video/3gpp`, `video/3gpp2`
+		- audio: `audio/mpeg`, `audio/mp3`, `audio/x-mpeg`, `audio/flac`, `audio/x-flac`, `audio/wav`, `audio/x-wav`, `audio/vnd.wave`, `audio/mp4`, `audio/x-m4a`, `audio/ogg`, `audio/opus`, `audio/aac`, `audio/x-aac`, `audio/amr`, `audio/x-ms-wma`, `audio/aiff`
+		- document/text: `application/pdf`, `text/plain`, `text/csv`, `application/json`
 	- `attachment` for all other types (including unknown types), which triggers download in most clients
 - Body: binary stream (not JSON)
 
