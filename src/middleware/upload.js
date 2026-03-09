@@ -8,6 +8,41 @@ const allowedMimeTypes = new Set([
     "image/png",
     "video/mp4",
     "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.oasis.opendocument.text",
+    "application/vnd.oasis.opendocument.spreadsheet",
+    "application/vnd.oasis.opendocument.presentation",
+    "text/csv",
+    "application/csv",
+    "application/json",
+    "text/plain",
+    "application/rtf",
+]);
+
+const allowedFileExtensions = new Set([
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".mp4",
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".ppt",
+    ".pptx",
+    ".odt",
+    ".ods",
+    ".odp",
+    ".csv",
+    ".json",
+    ".txt",
+    ".rtf",
 ]);
 
 const storage = multer.diskStorage({
@@ -21,15 +56,13 @@ const storage = multer.diskStorage({
 });
 
 function fileFilter(_req, file, cb) {
-    if (allowedMimeTypes.has(file.mimetype)) {
-        return cb(null, true);
-    }
+    const extension = path.extname(file.originalname || "").toLowerCase();
+    file.isRecognizedType =
+        allowedMimeTypes.has(file.mimetype) ||
+        allowedFileExtensions.has(extension);
 
-    const error = new Error(
-        `Unsupported file type. Allowed types: ${Array.from(allowedMimeTypes).join(", ")}`,
-    );
-    error.statusCode = 400;
-    return cb(error, false);
+    // Unknown file types are still allowed so the vault can store arbitrary files.
+    return cb(null, true);
 }
 
 const upload = multer({
@@ -64,4 +97,5 @@ function handleVaultUpload(req, res, next) {
 module.exports = {
     handleVaultUpload,
     allowedMimeTypes,
+    allowedFileExtensions,
 };

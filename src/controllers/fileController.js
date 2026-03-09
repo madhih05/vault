@@ -1,11 +1,72 @@
 const File = require("../models/File");
 const fs = require("fs");
+const path = require("path");
 const mongoose = require("mongoose");
 const logger = require("../logger");
 const { drive, folderId } = require("../config/googleDrive");
+const {
+    allowedMimeTypes,
+    allowedFileExtensions,
+} = require("../middleware/upload");
+
+const extensionToMimeType = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".mp4": "video/mp4",
+    ".pdf": "application/pdf",
+    ".doc": "application/msword",
+    ".docx":
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx":
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".pptx":
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".odt": "application/vnd.oasis.opendocument.text",
+    ".ods": "application/vnd.oasis.opendocument.spreadsheet",
+    ".odp": "application/vnd.oasis.opendocument.presentation",
+    ".csv": "text/csv",
+    ".json": "application/json",
+    ".txt": "text/plain",
+    ".rtf": "application/rtf",
+};
+
+const inlinePreviewMimeTypes = new Set([
+    "image/jpeg",
+    "image/png",
+    "video/mp4",
+    "application/pdf",
+    "text/plain",
+    "text/csv",
+    "application/json",
+]);
 
 function escapeRegExp(value) {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function resolveMimeType(file) {
+    const extension = path.extname(file.originalname || "").toLowerCase();
+
+    if (allowedMimeTypes.has(file.mimetype)) {
+        return file.mimetype;
+    }
+
+    if (allowedFileExtensions.has(extension)) {
+        return extensionToMimeType[extension] || "application/octet-stream";
+    }
+
+    return file.mimetype || "application/octet-stream";
+}
+
+function buildContentDisposition(dispositionType, fileName) {
+    const asciiSafeFileName = (fileName || "download")
+        .replace(/[\r\n]/g, "")
+        .replace(/\"/g, "");
+
+    return `${dispositionType}; filename="${asciiSafeFileName}"; filename*=UTF-8''${encodeURIComponent(fileName || "download")}`;
 }
 
 async function uploadFile(req, res) {
@@ -21,7 +82,10 @@ async function uploadFile(req, res) {
             originalName: req.file.originalname,
             mimeType: req.file.mimetype,
             fileSize: req.file.size,
+            isRecognizedType: req.file.isRecognizedType,
         });
+
+        const resolvedMimeType = resolveMimeType(req.file);
 
         const driveResponse = await drive.files.create({
             requestBody: {
@@ -29,7 +93,7 @@ async function uploadFile(req, res) {
                 parents: [folderId],
             },
             media: {
-                mimeType: req.file.mimetype,
+                mimeType: resolvedMimeType,
                 body: fs.createReadStream(tempFilePath),
             },
             fields: "id, name, webViewLink, thumbnailLink",
@@ -45,7 +109,7 @@ async function uploadFile(req, res) {
             driveFileId: driveResponse.data.id,
             thumbnailLink: driveResponse.data.thumbnailLink,
             webViewLink: driveResponse.data.webViewLink,
-            mimeType: req.file.mimetype,
+            mimeType: resolvedMimeType,
         });
 
         await newFileRecord.save();
@@ -93,10 +157,21 @@ async function listFiles(req, res) {
         const filter = {};
 
         if (fileType) {
-            filter.mimeType = {
-                $regex: escapeRegExp(fileType),
-                $options: "i",
-            };
+            const normalizedFileType = fileType.replace(/^\./, "");
+            filter.$or = [
+                {
+                    mimeType: {
+                        $regex: escapeRegExp(fileType),
+                        $options: "i",
+                    },
+                },
+                {
+                    originalName: {
+                        $regex: `\\.${escapeRegExp(normalizedFileType)}$`,
+                        $options: "i",
+                    },
+                },
+            ];
         }
 
         if (fileName) {
@@ -189,7 +264,26 @@ async function viewFile(req, res) {
             },
         );
 
-        res.setHeader("Content-Type", fileRecord.mimeType);
+        const fileExtension = path
+            .extname(fileRecord.originalName || "")
+            .toLowerCase();
+        const inferredMimeType = extensionToMimeType[fileExtension];
+        const effectiveMimeType =
+            fileRecord.mimeType ||
+            inferredMimeType ||
+            "application/octet-stream";
+        const shouldPreviewInline =
+            inlinePreviewMimeTypes.has(effectiveMimeType);
+
+        res.setHeader("Content-Type", effectiveMimeType);
+        res.setHeader(
+            "Content-Disposition",
+            buildContentDisposition(
+                shouldPreviewInline ? "inline" : "attachment",
+                fileRecord.originalName,
+            ),
+        );
+
         driveResponse.data.pipe(res);
 
         driveResponse.data.on("error", (error) => {

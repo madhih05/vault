@@ -110,7 +110,7 @@ Missing or invalid token responses:
 | `POST` | `/api/reset-with-key` | No | Reset password using recovery key |
 | `POST` | `/api/upload` | Yes | Upload file to Google Drive and store metadata |
 | `GET` | `/api/files` | Yes | List stored file metadata |
-| `GET` | `/api/files/:id/view` | Yes | Stream file content from Google Drive |
+| `GET` | `/api/files/:id/view` | Yes | View inline when supported, otherwise download |
 | `DELETE` | `/api/files/:id` | Yes | Delete file from Google Drive and DB |
 
 Note: `POST /api/register` exists in controller code but is currently disabled in routes (`src/routes/auth.js`).
@@ -251,12 +251,27 @@ Form data:
 
 - `vaultFile` (file) - required
 
-Accepted file MIME types:
+Recognized MIME types/extensions (used for MIME normalization and preview/download behavior):
 
 - `image/jpeg`
 - `image/png`
 - `video/mp4`
 - `application/pdf`
+- `application/msword` (`.doc`)
+- `application/vnd.openxmlformats-officedocument.wordprocessingml.document` (`.docx`)
+- `application/vnd.ms-excel` (`.xls`)
+- `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` (`.xlsx`)
+- `application/vnd.ms-powerpoint` (`.ppt`)
+- `application/vnd.openxmlformats-officedocument.presentationml.presentation` (`.pptx`)
+- `application/vnd.oasis.opendocument.text` (`.odt`)
+- `application/vnd.oasis.opendocument.spreadsheet` (`.ods`)
+- `application/vnd.oasis.opendocument.presentation` (`.odp`)
+- `text/csv` and `application/csv` (`.csv`)
+- `application/json` (`.json`)
+- `text/plain` (`.txt`)
+- `application/rtf` (`.rtf`)
+
+Other/unknown file types are also accepted and stored. If the backend cannot confidently classify them, it stores a fallback MIME type (`application/octet-stream`).
 
 Max file size: `50MB`.
 
@@ -285,7 +300,6 @@ Possible errors:
 
 - `400 { "error": "No file uploaded." }`
 - `400 { "error": "File too large. Maximum allowed size is 50MB." }`
-- `400 { "error": "Unsupported file type. Allowed types: image/jpeg, image/png, video/mp4, application/pdf" }`
 - `401 { "error": "Access denied. No token provided." }`
 - `401 { "error": "Invalid or expired token." }`
 - `500 { "error": "Failed to upload file to the vault." }`
@@ -307,7 +321,7 @@ Query params (all optional):
 
 - `page` (integer, >= 1, default: `1`)
 - `limit` (integer, 1 to 100, default: `20`)
-- `fileType` (string, case-insensitive partial match against `mimeType`)
+- `fileType` (string, case-insensitive match against either `mimeType` or file extension in `originalName`; examples: `pdf`, `.docx`, `application/json`)
 - `fileName` (string, case-insensitive partial match against `originalName`)
 
 Request body: none.
@@ -359,7 +373,7 @@ Possible errors:
 
 ### `GET /api/files/:id/view`
 
-Stream raw file content from Google Drive.
+Fetch file content from Google Drive and return it with browser-friendly disposition logic.
 
 Headers:
 
@@ -372,7 +386,10 @@ Path params:
 Success response:
 
 - Status: `200`
-- Content type: set to stored file MIME type (for example `image/png`)
+- Content type: set from stored/inferred MIME type (fallback `application/octet-stream`)
+- Content disposition:
+	- `inline` for preview-safe types (`image/jpeg`, `image/png`, `video/mp4`, `application/pdf`, `text/plain`, `text/csv`, `application/json`)
+	- `attachment` for all other types (including unknown types), which triggers download in most clients
 - Body: binary stream (not JSON)
 
 Possible errors:
@@ -419,4 +436,5 @@ Possible errors:
 - User registration endpoint is currently commented out in routes, so new users cannot be created through API until it is re-enabled.
 - File records are currently global in `GET /api/files` (not user-scoped).
 - Temporary upload files are stored in OS temp directory and cleaned up after upload attempt.
+- Unknown file types are accepted on upload and are served as downloadable attachments on `GET /api/files/:id/view`.
 - Request logs include method, path, status code, and duration.
