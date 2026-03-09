@@ -1,9 +1,9 @@
-import { API_BASE_URL, getToken } from '../../services/api'
+import { buildApiUrl, getToken } from '../../services/api'
 
 function GalleryItem({ file, onOpen }) {
   const token = getToken()
   const thumbnailUrl = token
-    ? `${API_BASE_URL}/api/files/${file._id}/thumbnail?token=${encodeURIComponent(token)}`
+    ? `${buildApiUrl(`/files/${file._id}/thumbnail`)}?token=${encodeURIComponent(token)}`
     : '/fallback-icon.svg'
   const isVideo = file.mimeType.startsWith('video/')
 
