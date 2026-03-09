@@ -453,7 +453,7 @@ function VaultDashboard() {
 
   return (
     <main
-      className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 px-3 py-4 sm:px-6"
+      className="vault-mobile-main-gap min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 px-3 sm:px-6"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}

@@ -16,6 +16,9 @@ app.use(requestLogger);
 
 app.use("/api", authRoutes);
 app.use("/api", fileRoutes);
+app.get("/healthcheck", (res) => {
+    res.status(200).json({ status: "ok" });
+});
 
 async function startServer() {
     try {

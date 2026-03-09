@@ -25,3 +25,14 @@ body {
 #root {
   min-height: 100vh;
 }
+
+@media (max-width: 639px) {
+  .vault-mobile-main-gap {
+    padding-top: calc(env(safe-area-inset-top, 0px) + 1cm);
+    padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 1cm);
+  }
+
+  .vault-mobile-floating-gap {
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 1cm) !important;
+  }
+}

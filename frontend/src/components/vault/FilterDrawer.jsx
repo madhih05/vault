@@ -61,7 +61,7 @@ function FilterDrawer({
     <>
       <button
         type="button"
-        className="fixed bottom-5 left-4 z-40 rounded-xl border border-slate-600 bg-slate-900 px-3 py-2.5 text-sm font-semibold text-slate-100 shadow-lg md:left-0 md:top-1/2 md:bottom-auto md:-translate-y-1/2 md:rounded-r-xl md:rounded-l-none"
+        className="vault-mobile-floating-gap fixed bottom-5 left-4 z-40 rounded-xl border border-slate-600 bg-slate-900 px-3 py-2.5 text-sm font-semibold text-slate-100 shadow-lg md:left-0 md:top-1/2 md:bottom-auto md:-translate-y-1/2 md:rounded-r-xl md:rounded-l-none"
         onClick={onOpen}
       >
         Filter

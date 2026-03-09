@@ -1,6 +1,6 @@
 function UploadFab({ onFilePicked, isUploading }) {
   return (
-    <label className="fixed bottom-4 right-4 z-40 cursor-pointer sm:bottom-6 sm:right-6">
+    <label className="vault-mobile-floating-gap fixed right-4 bottom-4 z-40 cursor-pointer sm:right-6 sm:bottom-6">
       <input
         type="file"
         className="hidden"
