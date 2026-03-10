@@ -16,35 +16,10 @@ import {
 const THUMBNAIL_SIZE = 150
 const THUMBNAIL_QUALITY = 0.78
 const SWIPE_THRESHOLD = 40
-const HEIC_MIME_TYPES = new Set([
-  'image/heic',
-  'image/heif',
-  'image/heic-sequence',
-  'image/heif-sequence',
-])
 
 const normalizeMimeType = (mimeType = '') => mimeType.toLowerCase()
 
-const hasHeicMimeType = (file) => HEIC_MIME_TYPES.has(normalizeMimeType(file?.mimeType || ''))
-
-const hasHeicExtension = (file) => /\.(heic|heif)$/i.test(file?.originalName || '')
-
-const isHeicFile = (file) => hasHeicMimeType(file) || hasHeicExtension(file)
-
-const isGalleryMediaFile = (file) => {
-  if (isHeicFile(file)) {
-    return false
-  }
-
-  const mime = normalizeMimeType(file?.mimeType || '')
-  return mime.startsWith('image/') || mime.startsWith('video/')
-}
-
 const isVideoFile = (file) => normalizeMimeType(file?.mimeType || '').startsWith('video/')
-
-const isAudioFile = (file) => normalizeMimeType(file?.mimeType || '').startsWith('audio/')
-
-const isDocumentFile = (file) => !isGalleryMediaFile(file) && !isAudioFile(file)
 
 const isThumbnailEligibleMimeType = (mimeType = '') => {
   const normalizedMimeType = normalizeMimeType(mimeType)
@@ -190,6 +165,9 @@ function VaultDashboard() {
 
   const [galleryFiles, setGalleryFiles] = useState([])
   const [docFiles, setDocFiles] = useState([])
+  const [galleryPage, setGalleryPage] = useState(1)
+  const [galleryHasNextPage, setGalleryHasNextPage] = useState(false)
+  const [isFetchingMoreGallery, setIsFetchingMoreGallery] = useState(false)
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -214,6 +192,7 @@ function VaultDashboard() {
   const [lightboxError, setLightboxError] = useState('')
 
   const [touchStartX, setTouchStartX] = useState(0)
+  const galleryLoadMoreRef = useRef(null)
 
   const thumbnailApiBaseUrl = API_BASE_URL || 'https://secretvault.madhih.in/api'
   const thumbnailToken = sessionStorage.getItem('token') || getToken() || ''
@@ -228,33 +207,38 @@ function VaultDashboard() {
     return () => window.clearTimeout(debounce)
   }, [searchInput])
 
-  const loadGalleryFiles = async (fileName) => {
-    const baseQuery = {
-      page: 1,
-      limit: 80,
+  const loadGalleryFiles = async ({ fileName, page = 1, append = false }) => {
+    const response = await listFiles({
+      page,
+      limit: 60,
+      fileType: 'media',
       ...(fileName ? { fileName } : {}),
-    }
+    })
 
-    const [imageResponse, videoResponse] = await Promise.all([
-      listFiles({ ...baseQuery, fileType: 'image' }),
-      listFiles({ ...baseQuery, fileType: 'video' }),
-    ])
+    const incomingFiles = response.files || []
 
-    const merged = [...(imageResponse.files || []), ...(videoResponse.files || [])]
-    const deduped = Array.from(new Map(merged.map((file) => [file._id, file])).values())
+    setGalleryFiles((previous) => {
+      if (!append) {
+        return incomingFiles
+      }
 
-    deduped.sort((a, b) => new Date(b.uploadDate) - new Date(a.uploadDate))
-    setGalleryFiles(deduped.filter(isGalleryMediaFile))
+      const merged = [...previous, ...incomingFiles]
+      return Array.from(new Map(merged.map((file) => [file._id, file])).values())
+    })
+
+    setGalleryPage(page)
+    setGalleryHasNextPage(Boolean(response?.pagination?.hasNextPage))
   }
 
   const loadDocFiles = async (fileName) => {
     const response = await listFiles({
       page: 1,
       limit: 100,
+      fileType: 'documents',
       ...(fileName ? { fileName } : {}),
     })
 
-    const docs = (response.files || []).filter(isDocumentFile)
+    const docs = response.files || []
     docs.sort((a, b) => new Date(b.uploadDate) - new Date(a.uploadDate))
     setDocFiles(docs)
   }
@@ -273,7 +257,7 @@ function VaultDashboard() {
 
       try {
         if (activeTab === 'gallery') {
-          await loadGalleryFiles(searchQuery)
+          await loadGalleryFiles({ fileName: searchQuery, page: 1, append: false })
         } else if (activeTab === 'docs') {
           await loadDocFiles(searchQuery)
         }
@@ -298,6 +282,56 @@ function VaultDashboard() {
       ignore = true
     }
   }, [activeTab, searchQuery])
+
+  useEffect(() => {
+    if (activeTab !== 'gallery' || !galleryHasNextPage) {
+      return undefined
+    }
+
+    const target = galleryLoadMoreRef.current
+    if (!target) {
+      return undefined
+    }
+
+    const observer = new IntersectionObserver(
+      async (entries) => {
+        const [entry] = entries
+        if (!entry?.isIntersecting || loading || isFetchingMoreGallery) {
+          return
+        }
+
+        setIsFetchingMoreGallery(true)
+        setError('')
+
+        try {
+          await loadGalleryFiles({
+            fileName: searchQuery,
+            page: galleryPage + 1,
+            append: true,
+          })
+        } catch (requestError) {
+          setError(
+            requestError?.response?.data?.error ||
+              requestError?.message ||
+              'Unable to load more files.',
+          )
+        } finally {
+          setIsFetchingMoreGallery(false)
+        }
+      },
+      {
+        root: null,
+        rootMargin: '400px',
+        threshold: 0,
+      },
+    )
+
+    observer.observe(target)
+
+    return () => {
+      observer.disconnect()
+    }
+  }, [activeTab, galleryHasNextPage, galleryPage, isFetchingMoreGallery, loading, searchQuery])
 
   useEffect(() => {
     let cancelled = false
@@ -401,7 +435,7 @@ function VaultDashboard() {
       if (activeTab === 'docs') {
         await loadDocFiles(searchQuery)
       } else {
-        await loadGalleryFiles(searchQuery)
+        await loadGalleryFiles({ fileName: searchQuery, page: 1, append: false })
       }
     } catch (uploadError) {
       setError(
@@ -569,36 +603,43 @@ function VaultDashboard() {
           loading ? (
             <p className="px-3 py-4 text-sm text-slate-400">Loading gallery...</p>
           ) : galleryFiles.length ? (
-            <div className="grid grid-cols-4 gap-[2px] sm:grid-cols-5 md:grid-cols-6">
-              {galleryFiles.map((file, index) => (
-                <button
-                  key={file._id}
-                  type="button"
-                  className="relative aspect-square overflow-hidden bg-slate-900"
-                  onClick={() => setLightboxIndex(index)}
-                  title={file.originalName}
-                >
-                  <img
-                    src={`${thumbnailApiBaseUrl}/files/${file._id}/thumbnail?token=${encodeURIComponent(thumbnailToken)}`}
-                    alt={file.originalName}
-                    className="h-full w-full object-cover"
-                    onError={(event) => {
-                      const imageElement = event.currentTarget
-                      imageElement.onerror = null
-                      imageElement.src = '/fallback-icon.svg'
-                    }}
-                  />
+            <>
+              <div className="grid grid-cols-4 gap-[2px] sm:grid-cols-5 md:grid-cols-6">
+                {galleryFiles.map((file, index) => (
+                  <button
+                    key={file._id}
+                    type="button"
+                    className="relative aspect-square overflow-hidden bg-slate-900"
+                    onClick={() => setLightboxIndex(index)}
+                    title={file.originalName}
+                  >
+                    <img
+                      src={`${thumbnailApiBaseUrl}/files/${file._id}/thumbnail?token=${encodeURIComponent(thumbnailToken)}`}
+                      alt={file.originalName}
+                      className="h-full w-full object-cover"
+                      onError={(event) => {
+                        const imageElement = event.currentTarget
+                        imageElement.onerror = null
+                        imageElement.src = '/fallback-icon.svg'
+                      }}
+                    />
 
-                  {isVideoFile(file) ? (
-                    <span className="absolute right-1 top-1 rounded bg-slate-900/80 p-1 text-cyan-300">
-                      <svg viewBox="0 0 24 24" fill="currentColor" className="h-3.5 w-3.5">
-                        <path d="M8 5v14l11-7z" />
-                      </svg>
-                    </span>
-                  ) : null}
-                </button>
-              ))}
-            </div>
+                    {isVideoFile(file) ? (
+                      <span className="absolute right-1 top-1 rounded bg-slate-900/80 p-1 text-cyan-300">
+                        <svg viewBox="0 0 24 24" fill="currentColor" className="h-3.5 w-3.5">
+                          <path d="M8 5v14l11-7z" />
+                        </svg>
+                      </span>
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+
+              {galleryHasNextPage ? <div ref={galleryLoadMoreRef} className="h-8 w-full" /> : null}
+              {isFetchingMoreGallery ? (
+                <p className="px-3 py-2 text-xs text-slate-500">Loading more files...</p>
+              ) : null}
+            </>
           ) : (
             <p className="px-3 py-6 text-sm text-slate-400">No media files found.</p>
           )

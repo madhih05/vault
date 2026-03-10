@@ -242,21 +242,83 @@ async function listFiles(req, res) {
         const filter = {};
 
         if (fileType) {
-            const normalizedFileType = fileType.replace(/^\./, "");
-            filter.$or = [
-                {
-                    mimeType: {
-                        $regex: escapeRegExp(fileType),
-                        $options: "i",
+            const normalizedFileType = fileType.toLowerCase();
+
+            if (normalizedFileType === "media") {
+                filter.$and = [
+                    {
+                        $or: [
+                            {
+                                mimeType: {
+                                    $regex: "^(image|video)/",
+                                    $options: "i",
+                                },
+                            },
+                            {
+                                originalName: {
+                                    $regex: "\\.(jpg|jpeg|png|mp4|mov|avi|mkv|webm|m4v|3gp|3g2)$",
+                                    $options: "i",
+                                },
+                            },
+                        ],
                     },
-                },
-                {
-                    originalName: {
-                        $regex: `\\.${escapeRegExp(normalizedFileType)}$`,
-                        $options: "i",
+                    {
+                        mimeType: {
+                            $not: {
+                                $regex: "^image/hei(c|f)(-sequence)?$",
+                                $options: "i",
+                            },
+                        },
                     },
-                },
-            ];
+                    {
+                        originalName: {
+                            $not: {
+                                $regex: "\\.(heic|heif)$",
+                                $options: "i",
+                            },
+                        },
+                    },
+                ];
+            } else if (normalizedFileType === "documents") {
+                filter.$or = [
+                    {
+                        mimeType: {
+                            $regex: "^image/hei(c|f)(-sequence)?$",
+                            $options: "i",
+                        },
+                    },
+                    {
+                        originalName: {
+                            $regex: "\\.(heic|heif)$",
+                            $options: "i",
+                        },
+                    },
+                    {
+                        mimeType: {
+                            $not: {
+                                $regex: "^(image|video|audio)/",
+                                $options: "i",
+                            },
+                        },
+                    },
+                ];
+            } else {
+                const normalizedToken = fileType.replace(/^\./, "");
+                filter.$or = [
+                    {
+                        mimeType: {
+                            $regex: escapeRegExp(fileType),
+                            $options: "i",
+                        },
+                    },
+                    {
+                        originalName: {
+                            $regex: `\\.${escapeRegExp(normalizedToken)}$`,
+                            $options: "i",
+                        },
+                    },
+                ];
+            }
         }
 
         if (fileName) {
