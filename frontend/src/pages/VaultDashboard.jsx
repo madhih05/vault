@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Capacitor } from '@capacitor/core'
 import {
   API_BASE_URL,
+  buildSecureFileViewUrl,
   changePassword,
   clearToken,
   deleteVaultFile,
@@ -16,6 +18,27 @@ import {
 const THUMBNAIL_SIZE = 150
 const THUMBNAIL_QUALITY = 0.78
 const SWIPE_THRESHOLD = 40
+const CACHE_TTL_MS = 60 * 1000
+const PULL_TO_REFRESH_THRESHOLD = 72
+
+const GALLERY_FILTER_OPTIONS = [
+  { label: 'All Media', value: 'media' },
+  { label: 'Images', value: 'image' },
+  { label: 'Videos', value: 'video' },
+]
+
+const DOC_FILTER_OPTIONS = [
+  { label: 'All Docs', value: 'documents' },
+  { label: 'PDF', value: 'pdf' },
+  { label: 'Word', value: 'word' },
+  { label: 'Excel', value: 'excel' },
+  { label: 'PowerPoint', value: 'powerpoint' },
+  { label: 'CSV', value: 'csv' },
+  { label: 'JSON', value: 'json' },
+  { label: 'Text', value: 'txt' },
+  { label: 'RTF', value: 'rtf' },
+  { label: 'HEIC/HEIF', value: 'heic' },
+]
 
 const normalizeMimeType = (mimeType = '') => mimeType.toLowerCase()
 
@@ -27,6 +50,17 @@ const isThumbnailEligibleMimeType = (mimeType = '') => {
 }
 
 const blobToObjectUrl = (blob) => URL.createObjectURL(blob)
+
+const formatSize = (bytes = 0) => {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return '0 B'
+  }
+
+  const units = ['B', 'KB', 'MB', 'GB']
+  const unitIndex = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
+  const value = bytes / 1024 ** unitIndex
+  return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`
+}
 
 const canvasToJpegBlob = (canvas) =>
   new Promise((resolve, reject) => {
@@ -162,6 +196,10 @@ function VaultDashboard() {
   const [activeTab, setActiveTab] = useState('gallery')
   const [searchInput, setSearchInput] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
+  const [filterByTab, setFilterByTab] = useState({
+    gallery: 'media',
+    docs: 'documents',
+  })
 
   const [galleryFiles, setGalleryFiles] = useState([])
   const [docFiles, setDocFiles] = useState([])
@@ -172,9 +210,12 @@ function VaultDashboard() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [isUploading, setIsUploading] = useState(false)
+  const [uploadQueueItems, setUploadQueueItems] = useState([])
+  const [uploadQueueOpen, setUploadQueueOpen] = useState(false)
   const [deletingId, setDeletingId] = useState('')
 
   const [docMenuId, setDocMenuId] = useState('')
+  const [filterMenuOpen, setFilterMenuOpen] = useState(false)
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
   const [changePasswordOpen, setChangePasswordOpen] = useState(false)
   const [changePasswordSubmitting, setChangePasswordSubmitting] = useState(false)
@@ -193,11 +234,62 @@ function VaultDashboard() {
 
   const [touchStartX, setTouchStartX] = useState(0)
   const galleryLoadMoreRef = useRef(null)
+  const dragDepthRef = useRef(0)
+  const uploadQueueRef = useRef([])
+  const uploadProcessorRunningRef = useRef(false)
+  const previousTabRef = useRef('gallery')
+  const scrollPositionRef = useRef({ gallery: 0, docs: 0, audio: 0 })
+  const tabCacheMetaRef = useRef({
+    gallery: { loaded: false, lastFetchedAt: 0, query: '', filter: 'media' },
+    docs: { loaded: false, lastFetchedAt: 0, query: '', filter: 'documents' },
+    audio: { loaded: true, lastFetchedAt: 0, query: '', filter: '' },
+  })
+  const pullStartYRef = useRef(null)
+  const [pullDistance, setPullDistance] = useState(0)
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const [isDragActive, setIsDragActive] = useState(false)
 
   const thumbnailApiBaseUrl = API_BASE_URL || 'https://secretvault.madhih.in/api'
   const thumbnailToken = sessionStorage.getItem('token') || getToken() || ''
 
   const activeLightboxFile = lightboxIndex >= 0 ? galleryFiles[lightboxIndex] : null
+
+  useEffect(() => {
+    uploadQueueRef.current = uploadQueueItems
+  }, [uploadQueueItems])
+
+  const overallUploadProgress = useMemo(() => {
+    if (!uploadQueueItems.length) {
+      return 0
+    }
+
+    const totalBytes = uploadQueueItems.reduce((accumulator, item) => accumulator + (item.size || 0), 0)
+    if (!totalBytes) {
+      return 0
+    }
+
+    const uploadedBytes = uploadQueueItems.reduce(
+      (accumulator, item) => accumulator + ((item.size || 0) * (item.progress || 0)) / 100,
+      0,
+    )
+
+    return Math.min(100, Math.round((uploadedBytes / totalBytes) * 100))
+  }, [uploadQueueItems])
+
+  const hasUploadActivity = uploadQueueItems.some((item) => item.status === 'queued' || item.status === 'uploading')
+
+  useEffect(() => {
+    if (!uploadQueueItems.length || hasUploadActivity) {
+      return undefined
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setUploadQueueItems([])
+      setUploadQueueOpen(false)
+    }, 900)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [hasUploadActivity, uploadQueueItems])
 
   useEffect(() => {
     const debounce = window.setTimeout(() => {
@@ -207,11 +299,11 @@ function VaultDashboard() {
     return () => window.clearTimeout(debounce)
   }, [searchInput])
 
-  const loadGalleryFiles = async ({ fileName, page = 1, append = false }) => {
+  const loadGalleryFiles = async ({ fileName, filterType, page = 1, append = false }) => {
     const response = await listFiles({
       page,
       limit: 60,
-      fileType: 'media',
+      fileType: filterType,
       ...(fileName ? { fileName } : {}),
     })
 
@@ -230,11 +322,11 @@ function VaultDashboard() {
     setGalleryHasNextPage(Boolean(response?.pagination?.hasNextPage))
   }
 
-  const loadDocFiles = async (fileName) => {
+  const loadDocFiles = async ({ fileName, filterType }) => {
     const response = await listFiles({
       page: 1,
       limit: 100,
-      fileType: 'documents',
+      fileType: filterType,
       ...(fileName ? { fileName } : {}),
     })
 
@@ -243,45 +335,75 @@ function VaultDashboard() {
     setDocFiles(docs)
   }
 
+  const updateTabCacheMeta = (tab, query, filter) => {
+    tabCacheMetaRef.current[tab] = {
+      loaded: true,
+      lastFetchedAt: Date.now(),
+      query,
+      filter,
+    }
+  }
+
+  const shouldFetchTab = (tab, query, filter, force = false) => {
+    if (force) {
+      return true
+    }
+
+    const meta = tabCacheMetaRef.current[tab]
+    if (!meta?.loaded) {
+      return true
+    }
+
+    if (meta.query !== query || meta.filter !== filter) {
+      return true
+    }
+
+    return Date.now() - meta.lastFetchedAt > CACHE_TTL_MS
+  }
+
+  const refreshActiveTab = async ({ force = false } = {}) => {
+    if (activeTab === 'audio') {
+      return
+    }
+
+    const activeFilter = activeTab === 'gallery' ? filterByTab.gallery : filterByTab.docs
+    if (!shouldFetchTab(activeTab, searchQuery, activeFilter, force)) {
+      return
+    }
+
+    setLoading(true)
+    setError('')
+
+    try {
+      if (activeTab === 'gallery') {
+        await loadGalleryFiles({
+          fileName: searchQuery,
+          filterType: filterByTab.gallery,
+          page: 1,
+          append: false,
+        })
+      } else {
+        await loadDocFiles({
+          fileName: searchQuery,
+          filterType: filterByTab.docs,
+        })
+      }
+
+      updateTabCacheMeta(activeTab, searchQuery, activeFilter)
+    } catch (requestError) {
+      setError(
+        requestError?.response?.data?.error ||
+          requestError?.message ||
+          'Unable to fetch files from the vault.',
+      )
+    } finally {
+      setLoading(false)
+    }
+  }
+
   useEffect(() => {
-    let ignore = false
-
-    const loadActiveTab = async () => {
-      if (activeTab === 'audio') {
-        setError('')
-        return
-      }
-
-      setLoading(true)
-      setError('')
-
-      try {
-        if (activeTab === 'gallery') {
-          await loadGalleryFiles({ fileName: searchQuery, page: 1, append: false })
-        } else if (activeTab === 'docs') {
-          await loadDocFiles(searchQuery)
-        }
-      } catch (requestError) {
-        if (!ignore) {
-          setError(
-            requestError?.response?.data?.error ||
-              requestError?.message ||
-              'Unable to fetch files from the vault.',
-          )
-        }
-      } finally {
-        if (!ignore) {
-          setLoading(false)
-        }
-      }
-    }
-
-    loadActiveTab()
-
-    return () => {
-      ignore = true
-    }
-  }, [activeTab, searchQuery])
+    refreshActiveTab()
+  }, [activeTab, searchQuery, filterByTab.gallery, filterByTab.docs])
 
   useEffect(() => {
     if (activeTab !== 'gallery' || !galleryHasNextPage) {
@@ -306,9 +428,11 @@ function VaultDashboard() {
         try {
           await loadGalleryFiles({
             fileName: searchQuery,
+            filterType: filterByTab.gallery,
             page: galleryPage + 1,
             append: true,
           })
+          updateTabCacheMeta('gallery', searchQuery, filterByTab.gallery)
         } catch (requestError) {
           setError(
             requestError?.response?.data?.error ||
@@ -331,7 +455,15 @@ function VaultDashboard() {
     return () => {
       observer.disconnect()
     }
-  }, [activeTab, galleryHasNextPage, galleryPage, isFetchingMoreGallery, loading, searchQuery])
+  }, [
+    activeTab,
+    filterByTab.gallery,
+    galleryHasNextPage,
+    galleryPage,
+    isFetchingMoreGallery,
+    loading,
+    searchQuery,
+  ])
 
   useEffect(() => {
     let cancelled = false
@@ -387,6 +519,88 @@ function VaultDashboard() {
     navigate('/', { replace: true })
   }
 
+  const handleTabSwitch = (tabName) => {
+    scrollPositionRef.current[activeTab] = window.scrollY || 0
+    setActiveTab(tabName)
+    setFilterMenuOpen(false)
+    setDocMenuId('')
+    setProfileMenuOpen(false)
+  }
+
+  useEffect(() => {
+    const previousTab = previousTabRef.current
+    if (previousTab !== activeTab) {
+      const savedScroll = scrollPositionRef.current[activeTab] || 0
+      window.requestAnimationFrame(() => {
+        window.scrollTo({ top: savedScroll, behavior: 'auto' })
+      })
+      previousTabRef.current = activeTab
+    }
+  }, [activeTab])
+
+  const handleTouchStart = (event) => {
+    if (window.scrollY > 0 || activeTab === 'audio' || loading || isRefreshing) {
+      pullStartYRef.current = null
+      return
+    }
+
+    pullStartYRef.current = event.touches?.[0]?.clientY || null
+  }
+
+  const handleTouchMove = (event) => {
+    if (pullStartYRef.current === null) {
+      return
+    }
+
+    const currentY = event.touches?.[0]?.clientY || 0
+    const delta = currentY - pullStartYRef.current
+
+    if (delta <= 0 || window.scrollY > 0) {
+      setPullDistance(0)
+      return
+    }
+
+    event.preventDefault()
+    setPullDistance(Math.min(96, delta * 0.45))
+  }
+
+  const handleTouchEnd = async () => {
+    if (pullStartYRef.current === null) {
+      return
+    }
+
+    pullStartYRef.current = null
+
+    if (pullDistance >= PULL_TO_REFRESH_THRESHOLD) {
+      setIsRefreshing(true)
+      await refreshActiveTab({ force: true })
+      setIsRefreshing(false)
+    }
+
+    setPullDistance(0)
+  }
+
+  const activeFilterOptions = activeTab === 'docs' ? DOC_FILTER_OPTIONS : GALLERY_FILTER_OPTIONS
+  const activeFilterValue = activeTab === 'docs' ? filterByTab.docs : filterByTab.gallery
+  const activeFilterLabel =
+    activeFilterOptions.find((option) => option.value === activeFilterValue)?.label || 'Filter'
+
+  const applyFilterForActiveTab = (nextFilterValue) => {
+    if (activeTab === 'audio') {
+      return
+    }
+
+    setFilterByTab((previous) => {
+      if (activeTab === 'docs') {
+        return { ...previous, docs: nextFilterValue }
+      }
+
+      return { ...previous, gallery: nextFilterValue }
+    })
+
+    setFilterMenuOpen(false)
+  }
+
   const handlePasswordFieldChange = (event) => {
     const { name, value } = event.target
     setPasswordFormState((previous) => ({ ...previous, [name]: value }))
@@ -417,35 +631,187 @@ function VaultDashboard() {
     }
   }
 
-  const handleUpload = async (file) => {
-    setIsUploading(true)
-    setError('')
+  const processUploadQueue = async () => {
+    if (uploadProcessorRunningRef.current) {
+      return
+    }
 
-    try {
-      let thumbnailBlob = null
+    uploadProcessorRunningRef.current = true
+    setIsUploading(true)
+
+    let hadFailures = false
+    let hadSuccessfulUploads = false
+
+    while (true) {
+      const nextItem = uploadQueueRef.current.find((item) => item.status === 'queued')
+      if (!nextItem) {
+        break
+      }
+
+      setUploadQueueItems((previous) =>
+        previous.map((entry) =>
+          entry.id === nextItem.id
+            ? {
+                ...entry,
+                status: 'uploading',
+                progress: Math.max(1, entry.progress),
+                error: '',
+              }
+            : entry,
+        ),
+      )
 
       try {
-        thumbnailBlob = await createUploadThumbnail(file)
-      } catch (thumbnailError) {
-        console.warn('Thumbnail generation failed. Uploading without custom thumbnail.', thumbnailError)
-      }
+        let thumbnailBlob = null
 
-      await uploadVaultFile(file, thumbnailBlob)
+        try {
+          thumbnailBlob = await createUploadThumbnail(nextItem.file)
+        } catch (thumbnailError) {
+          console.warn('Thumbnail generation failed. Uploading without custom thumbnail.', thumbnailError)
+        }
 
-      if (activeTab === 'docs') {
-        await loadDocFiles(searchQuery)
-      } else {
-        await loadGalleryFiles({ fileName: searchQuery, page: 1, append: false })
-      }
-    } catch (uploadError) {
-      setError(
-        uploadError?.response?.data?.error ||
+        await uploadVaultFile(nextItem.file, thumbnailBlob, (progressEvent) => {
+          const total = progressEvent?.total || nextItem.size || 1
+          const loaded = progressEvent?.loaded || 0
+          const percent = Math.max(1, Math.min(100, Math.round((loaded / total) * 100)))
+
+          setUploadQueueItems((previous) =>
+            previous.map((entry) =>
+              entry.id === nextItem.id
+                ? {
+                    ...entry,
+                    progress: percent,
+                  }
+                : entry,
+            ),
+          )
+        })
+
+        hadSuccessfulUploads = true
+        setUploadQueueItems((previous) =>
+          previous.map((entry) =>
+            entry.id === nextItem.id
+              ? {
+                  ...entry,
+                  status: 'completed',
+                  progress: 100,
+                }
+              : entry,
+          ),
+        )
+      } catch (uploadError) {
+        hadFailures = true
+        const message =
+          uploadError?.response?.data?.error ||
+          uploadError?.response?.data?.message ||
           uploadError?.message ||
-          'Upload failed.',
-      )
-    } finally {
-      setIsUploading(false)
+          'Upload failed.'
+
+        setUploadQueueItems((previous) =>
+          previous.map((entry) =>
+            entry.id === nextItem.id
+              ? {
+                  ...entry,
+                  status: 'failed',
+                  progress: 100,
+                  error: message,
+                }
+              : entry,
+          ),
+        )
+      }
     }
+
+    if (hadFailures) {
+      setError('Some files failed to upload. Check upload progress for details.')
+    }
+
+    if (hadSuccessfulUploads) {
+      await refreshActiveTab({ force: true })
+    }
+
+    uploadProcessorRunningRef.current = false
+    setIsUploading(false)
+  }
+
+  const handleUploadFiles = (selectedFiles) => {
+    const files = Array.from(selectedFiles || []).filter(Boolean)
+    if (!files.length) {
+      return
+    }
+
+    const queuedItems = files.map((file, index) => ({
+      id: `${Date.now()}-${index}-${file.name}`,
+      file,
+      name: file.name,
+      size: file.size,
+      progress: 0,
+      status: 'queued',
+      error: '',
+    }))
+
+    setUploadQueueItems((previous) => [...previous, ...queuedItems])
+    setUploadQueueOpen(true)
+    setError('')
+  }
+
+  useEffect(() => {
+    const hasQueuedFiles = uploadQueueItems.some((item) => item.status === 'queued')
+    if (!hasQueuedFiles || uploadProcessorRunningRef.current) {
+      return
+    }
+
+    processUploadQueue()
+  }, [uploadQueueItems])
+
+  const handleDragEnter = (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+
+    if (!event.dataTransfer?.types?.includes('Files')) {
+      return
+    }
+
+    dragDepthRef.current += 1
+    setIsDragActive(true)
+  }
+
+  const handleDragOver = (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'copy'
+    }
+  }
+
+  const handleDragLeave = (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+
+    if (!event.dataTransfer?.types?.includes('Files')) {
+      return
+    }
+
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+    if (dragDepthRef.current === 0) {
+      setIsDragActive(false)
+    }
+  }
+
+  const handleDrop = (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+
+    dragDepthRef.current = 0
+    setIsDragActive(false)
+
+    const droppedFiles = event.dataTransfer?.files
+    if (!droppedFiles?.length) {
+      return
+    }
+
+    handleUploadFiles(droppedFiles)
   }
 
   const handleDeleteById = async (fileId) => {
@@ -474,6 +840,17 @@ function VaultDashboard() {
 
   const handleOpenDocument = async (file) => {
     try {
+      if (Capacitor.isNativePlatform()) {
+        const secureUrl = buildSecureFileViewUrl(file._id)
+        const opened = window.open(secureUrl, '_blank', 'noopener,noreferrer')
+
+        if (!opened) {
+          window.location.assign(secureUrl)
+        }
+
+        return
+      }
+
       const secureFile = await fetchSecureFileObjectUrl(file._id)
       const opened = window.open(secureFile.objectUrl, '_blank', 'noopener,noreferrer')
 
@@ -489,6 +866,33 @@ function VaultDashboard() {
         openError?.response?.data?.error ||
           openError?.message ||
           'Unable to securely open the document.',
+      )
+    }
+  }
+
+  const handleDownloadDocument = async (file) => {
+    try {
+      if (Capacitor.isNativePlatform()) {
+        const secureUrl = buildSecureFileViewUrl(file._id, { download: true })
+        const opened = window.open(secureUrl, '_blank', 'noopener,noreferrer')
+
+        if (!opened) {
+          window.location.assign(secureUrl)
+        }
+
+        return
+      }
+
+      const secureFile = await fetchSecureFileObjectUrl(file._id)
+      const anchor = document.createElement('a')
+      anchor.href = secureFile.objectUrl
+      anchor.download = file.originalName
+      anchor.click()
+    } catch (downloadError) {
+      setError(
+        downloadError?.response?.data?.error ||
+          downloadError?.message ||
+          'Unable to securely download the document.',
       )
     }
   }
@@ -528,7 +932,25 @@ function VaultDashboard() {
   }, [activeLightboxFile, lightboxMimeType, lightboxObjectUrl])
 
   return (
-    <main className="vault-mobile-main-gap min-h-screen bg-slate-950 text-slate-100">
+    <main
+      className="vault-mobile-main-gap min-h-screen bg-slate-950 text-slate-100"
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {isDragActive ? (
+        <div className="pointer-events-none fixed inset-0 z-[70] grid place-items-center bg-slate-950/75 p-6">
+          <div className="w-full max-w-md rounded-2xl border-2 border-dashed border-cyan-300 bg-slate-900/90 p-6 text-center">
+            <p className="text-base font-semibold text-cyan-200">Drop files to upload</p>
+            <p className="mt-2 text-sm text-slate-300">Supports single and multiple files</p>
+          </div>
+        </div>
+      ) : null}
+
       <header className="sticky top-0 z-30 border-b border-slate-800 bg-slate-950/95 px-3 pb-3 pt-2 backdrop-blur relative">
         <div className="mb-2 flex items-center justify-between">
           <h1 className="font-serif text-xl text-slate-100">Vault</h1>
@@ -590,6 +1012,43 @@ function VaultDashboard() {
             <path d="m20 20-3.5-3.5" />
           </svg>
         </div>
+
+        {activeTab !== 'audio' ? (
+          <div className="relative mt-2 flex justify-end">
+            <button
+              type="button"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-1.5 text-xs text-slate-200"
+              onClick={() => setFilterMenuOpen((previous) => !previous)}
+              aria-label="Open filter options"
+            >
+              <svg viewBox="0 0 24 24" fill="none" className="h-3.5 w-3.5" stroke="currentColor" strokeWidth="1.8">
+                <path d="M4 6h16" />
+                <path d="M7 12h10" />
+                <path d="M10 18h4" />
+              </svg>
+              <span>{activeFilterLabel}</span>
+            </button>
+
+            {filterMenuOpen ? (
+              <div className="absolute right-0 top-9 z-40 min-w-40 rounded-xl border border-slate-700 bg-slate-900 p-1 shadow-xl">
+                {activeFilterOptions.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    className={`block w-full rounded-lg px-3 py-2 text-left text-sm ${
+                      activeFilterValue === option.value
+                        ? 'bg-slate-800 text-cyan-300'
+                        : 'text-slate-200 hover:bg-slate-800'
+                    }`}
+                    onClick={() => applyFilterForActiveTab(option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </header>
 
       {error ? (
@@ -598,7 +1057,17 @@ function VaultDashboard() {
         </div>
       ) : null}
 
-      <section className="pb-28 pt-1">
+      <section className="pb-28 pt-1" style={{ transform: `translateY(${pullDistance}px)` }}>
+        {(pullDistance > 0 || isRefreshing) && activeTab !== 'audio' ? (
+          <div className="px-3 py-2 text-center text-xs text-slate-400">
+            {isRefreshing
+              ? 'Refreshing...'
+              : pullDistance >= PULL_TO_REFRESH_THRESHOLD
+              ? 'Release to refresh'
+              : 'Pull to refresh'}
+          </div>
+        ) : null}
+
         {activeTab === 'gallery' ? (
           loading ? (
             <p className="px-3 py-4 text-sm text-slate-400">Loading gallery...</p>
@@ -691,6 +1160,16 @@ function VaultDashboard() {
                       </button>
                       <button
                         type="button"
+                        className="block w-full px-3 py-2 text-left text-xs text-slate-200 hover:bg-slate-800"
+                        onClick={() => {
+                          setDocMenuId('')
+                          handleDownloadDocument(file)
+                        }}
+                      >
+                        Download
+                      </button>
+                      <button
+                        type="button"
                         className="block w-full px-3 py-2 text-left text-xs text-red-300 hover:bg-slate-800"
                         onClick={() => {
                           setDocMenuId('')
@@ -726,6 +1205,112 @@ function VaultDashboard() {
         ) : null}
       </section>
 
+      {uploadQueueItems.length ? (
+        <button
+          type="button"
+          onClick={() => setUploadQueueOpen((previous) => !previous)}
+          className="fixed left-4 z-40 rounded-full bg-slate-900/95 p-1 shadow-lg ring-1 ring-slate-700"
+          style={{
+            bottom: 'calc(env(safe-area-inset-bottom, 0px) + 4.75rem)',
+          }}
+          aria-label="Open upload progress"
+        >
+          <svg viewBox="0 0 44 44" className="h-14 w-14 -rotate-90">
+            <circle cx="22" cy="22" r="17" fill="none" stroke="rgb(51 65 85)" strokeWidth="4" />
+            <circle
+              cx="22"
+              cy="22"
+              r="17"
+              fill="none"
+              stroke={hasUploadActivity ? 'rgb(34 211 238)' : 'rgb(52 211 153)'}
+              strokeWidth="4"
+              strokeLinecap="round"
+              strokeDasharray={`${2 * Math.PI * 17}`}
+              strokeDashoffset={`${2 * Math.PI * 17 * (1 - overallUploadProgress / 100)}`}
+            />
+          </svg>
+          <span className="pointer-events-none absolute inset-0 grid place-items-center text-xs font-semibold text-slate-100">
+            {overallUploadProgress}%
+          </span>
+        </button>
+      ) : null}
+
+      {uploadQueueOpen && uploadQueueItems.length ? (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/60"
+          onClick={() => setUploadQueueOpen(false)}
+          role="presentation"
+        >
+          <div
+            className="absolute bottom-24 left-3 right-3 max-h-[55vh] overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-label="Upload progress list"
+          >
+            <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+              <div>
+                <p className="text-sm font-semibold text-slate-100">Upload Progress</p>
+                <p className="text-xs text-slate-400">{overallUploadProgress}% overall</p>
+              </div>
+              <button
+                type="button"
+                className="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+                onClick={() => {
+                  setUploadQueueItems([])
+                  setUploadQueueOpen(false)
+                }}
+                disabled={hasUploadActivity}
+              >
+                Clear
+              </button>
+            </div>
+
+            <div className="max-h-[42vh] space-y-3 overflow-y-auto px-4 py-3">
+              {uploadQueueItems.map((item) => {
+                const statusLabel =
+                  item.status === 'uploading'
+                    ? 'Uploading'
+                    : item.status === 'queued'
+                    ? 'Queued'
+                    : item.status === 'failed'
+                    ? 'Failed'
+                    : 'Completed'
+
+                return (
+                  <div key={item.id} className="rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+                    <div className="mb-1 flex items-start justify-between gap-2">
+                      <p className="truncate text-sm text-slate-100">{item.name}</p>
+                      <span
+                        className={`text-xs ${
+                          item.status === 'failed'
+                            ? 'text-red-300'
+                            : item.status === 'completed'
+                            ? 'text-emerald-300'
+                            : item.status === 'uploading'
+                            ? 'text-cyan-300'
+                            : 'text-slate-400'
+                        }`}
+                      >
+                        {statusLabel}
+                      </span>
+                    </div>
+
+                    <p className="mb-2 text-[11px] text-slate-500">{formatSize(item.size)}</p>
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                      <div
+                        className={`h-full transition-all ${item.status === 'failed' ? 'bg-red-400' : 'bg-cyan-400'}`}
+                        style={{ width: `${item.progress}%` }}
+                      />
+                    </div>
+                    {item.error ? <p className="mt-2 text-xs text-red-300">{item.error}</p> : null}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <label
         className="fixed right-4 z-40 cursor-pointer"
         style={{
@@ -735,15 +1320,14 @@ function VaultDashboard() {
         <input
           ref={fileInputRef}
           type="file"
+          multiple
           className="hidden"
           onChange={(event) => {
-            const file = event.target.files?.[0]
-            if (file) {
-              handleUpload(file)
+            if (event.target.files?.length) {
+              handleUploadFiles(event.target.files)
             }
             event.target.value = ''
           }}
-          disabled={isUploading}
         />
         <span className="inline-flex h-14 w-14 items-center justify-center rounded-full bg-cyan-400 text-3xl font-semibold text-slate-950 shadow-lg transition hover:bg-cyan-300">
           {isUploading ? '...' : '+'}
@@ -760,7 +1344,7 @@ function VaultDashboard() {
             className={`flex flex-col items-center gap-1 py-2 text-xs ${
               activeTab === 'gallery' ? 'text-cyan-400' : 'text-slate-400'
             }`}
-            onClick={() => setActiveTab('gallery')}
+            onClick={() => handleTabSwitch('gallery')}
           >
             <svg viewBox="0 0 24 24" fill="none" className={iconClass} stroke="currentColor" strokeWidth="1.8">
               <rect x="3" y="3" width="8" height="8" rx="1.5" />
@@ -776,7 +1360,7 @@ function VaultDashboard() {
             className={`flex flex-col items-center gap-1 py-2 text-xs ${
               activeTab === 'docs' ? 'text-cyan-400' : 'text-slate-400'
             }`}
-            onClick={() => setActiveTab('docs')}
+            onClick={() => handleTabSwitch('docs')}
           >
             <svg viewBox="0 0 24 24" fill="none" className={iconClass} stroke="currentColor" strokeWidth="1.8">
               <path d="M7 3h7l5 5v13H7z" />
@@ -790,7 +1374,7 @@ function VaultDashboard() {
             className={`flex flex-col items-center gap-1 py-2 text-xs ${
               activeTab === 'audio' ? 'text-cyan-400' : 'text-slate-400'
             }`}
-            onClick={() => setActiveTab('audio')}
+            onClick={() => handleTabSwitch('audio')}
           >
             <svg viewBox="0 0 24 24" fill="none" className={iconClass} stroke="currentColor" strokeWidth="1.8">
               <path d="M5 9v6" />

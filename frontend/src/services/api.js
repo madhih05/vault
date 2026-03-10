@@ -4,10 +4,12 @@ const TOKEN_STORAGE_KEY = "vault_jwt";
 const secureFileCache = new Map();
 
 function normalizeApiBaseUrl(rawBaseUrl) {
-    const normalized = (rawBaseUrl || "https://secretvault.madhih.in").replace(
+    const normalized = (rawBaseUrl || "http://secretvault.madhih.in").replace(
         /\/+$/,
         "",
     );
+
+    // const normalized = "http://10.101.105.234:3000";
 
     if (normalized.endsWith("/api")) {
         return normalized;
@@ -26,6 +28,29 @@ export function buildApiUrl(pathname) {
         : `/${pathname}`;
 
     return `${API_BASE_URL}${pathWithLeadingSlash}`;
+}
+
+export function buildSecureFileViewUrl(
+    fileId,
+    { download = false, token = getToken() } = {},
+) {
+    if (!fileId) {
+        throw new Error("A file ID is required to build a secure file URL.");
+    }
+
+    const url = new URL(
+        buildApiUrl(`/files/${encodeURIComponent(fileId)}/view`),
+    );
+
+    if (token) {
+        url.searchParams.set("token", token);
+    }
+
+    if (download) {
+        url.searchParams.set("download", "1");
+    }
+
+    return url.toString();
 }
 
 export const api = axios.create({
@@ -116,7 +141,7 @@ export async function listFiles({
     return response.data;
 }
 
-export async function uploadVaultFile(file, thumbnailBlob) {
+export async function uploadVaultFile(file, thumbnailBlob, onUploadProgress) {
     const postUpload = async (includeThumbnail) => {
         const formData = new FormData();
         formData.append("vaultFile", file);
@@ -134,6 +159,11 @@ export async function uploadVaultFile(file, thumbnailBlob) {
             headers: {
                 "Content-Type": "multipart/form-data",
             },
+            ...(onUploadProgress
+                ? {
+                      onUploadProgress,
+                  }
+                : {}),
         });
     };
 

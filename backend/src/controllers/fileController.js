@@ -381,6 +381,9 @@ async function listFiles(req, res) {
 async function viewFile(req, res) {
     try {
         const fileId = req.params.id;
+        const downloadRequested =
+            String(req.query.download || "").toLowerCase() === "1" ||
+            String(req.query.download || "").toLowerCase() === "true";
 
         if (!mongoose.Types.ObjectId.isValid(fileId)) {
             return res.status(400).json({ error: "Invalid file ID." });
@@ -419,7 +422,7 @@ async function viewFile(req, res) {
             inferredMimeType ||
             "application/octet-stream";
         const shouldPreviewInline =
-            inlinePreviewMimeTypes.has(effectiveMimeType);
+            !downloadRequested && inlinePreviewMimeTypes.has(effectiveMimeType);
 
         res.setHeader("Content-Type", effectiveMimeType);
         res.setHeader(
