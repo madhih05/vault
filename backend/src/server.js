@@ -16,8 +16,9 @@ app.use(requestLogger);
 
 app.use("/api", authRoutes);
 app.use("/api", fileRoutes);
-app.get("/healthcheck", (res) => {
-    res.status(200).json({ status: "ok" });
+// --- WAKE UP PING / HEALTHCHECK ROUTE ---
+app.get("/healthcheck", (req, res) => {
+    res.status(200).json({ status: "ok", message: "Server is awake!" });
 });
 
 async function startServer() {
