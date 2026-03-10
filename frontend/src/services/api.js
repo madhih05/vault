@@ -1,10 +1,11 @@
 import axios from "axios";
+import { compressMedia } from "./mediaCompressor";
 
 const TOKEN_STORAGE_KEY = "vault_jwt";
 const secureFileCache = new Map();
 
 function normalizeApiBaseUrl(rawBaseUrl) {
-    const normalized = (rawBaseUrl || "http://secretvault.madhih.in").replace(
+    const normalized = (rawBaseUrl || "https://secretvault.madhih.in").replace(
         /\/+$/,
         "",
     );
@@ -141,13 +142,32 @@ export async function listFiles({
     return response.data;
 }
 
-export async function uploadVaultFile(file, thumbnailBlob, onUploadProgress) {
+export async function uploadVaultFile(
+    file,
+    thumbnailBlob,
+    onUploadProgress,
+    onStageChange,
+) {
+    const mimeType = String(file?.type || "").toLowerCase();
+    const isImageFile = mimeType.startsWith("image/");
+
+    if (isImageFile) {
+        onStageChange?.("compressing");
+    }
+
+    const fileToUpload = isImageFile ? await compressMedia(file) : file;
+
+    onStageChange?.("uploading");
+
     const postUpload = async (includeThumbnail) => {
         const formData = new FormData();
-        formData.append("vaultFile", file);
+        formData.append("vaultFile", fileToUpload);
 
         if (includeThumbnail && thumbnailBlob) {
-            const baseName = (file?.name || "file").replace(/\.[^.]+$/, "");
+            const baseName = (fileToUpload?.name || "file").replace(
+                /\.[^.]+$/,
+                "",
+            );
             formData.append(
                 "vaultThumbnail",
                 thumbnailBlob,

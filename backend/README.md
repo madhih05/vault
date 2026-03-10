@@ -1,44 +1,38 @@
-# Vault API
+# Vault Backend API
 
 Secure file vault backend built with Express, MongoDB, JWT auth, and Google Drive storage.
 
-## Tech Stack
+## Current Stack
 
-- Node.js + Express
+- Node.js (CommonJS)
+- Express 5
 - MongoDB + Mongoose
-- JWT (`x-auth-token` header)
-- Google Drive API (file storage)
-- Multer (multipart upload handling)
-- Express Validator (request validation)
-- Express Rate Limit (auth hardening)
+- JWT auth (`jsonwebtoken`)
+- Google Drive API (`googleapis`)
+- Multer upload middleware
+- express-validator
+- express-rate-limit
 
-## Project Structure
+## Project Layout
 
 ```text
 src/
-	server.js                 # App bootstrap
-	routes/                   # HTTP route definitions
-	controllers/              # Request handlers
-	middleware/               # Auth, validation, upload, request logging
-	models/                   # MongoDB schemas
-	config/                   # DB and Google Drive clients
-	helpers/                  # Auth utilities
+  server.js                 # App bootstrap and startup
+  routes/                   # HTTP route definitions
+  controllers/              # Route handlers
+  middleware/               # Auth, request logging, upload, validation
+  models/                   # Mongoose schemas
+  config/                   # DB and Google Drive setup
+  helpers/                  # Auth helpers
 tests/
-	auth.test.js              # Route hardening tests for /login
-generate-keys.js            # Recovery key generator for existing users
+  auth.test.js              # Auth route hardening tests
+  run-functional-tests.js   # End-to-end API checks against a running server
+generate-keys.js            # Generates missing recovery keys for existing users
 ```
 
-## Getting Started
+## Environment Variables
 
-### 1. Install dependencies
-
-```bash
-npm install
-```
-
-### 2. Configure environment variables
-
-Create a `.env` file with:
+Create `backend/.env`:
 
 ```env
 PORT=3000
@@ -51,411 +45,243 @@ GOOGLE_REFRESH_TOKEN=your_google_refresh_token
 DRIVE_FOLDER_ID=your_google_drive_folder_id
 
 LOG_LEVEL=info
+NODE_ENV=development
 ```
 
-### 3. Start the server
+## Run
 
 ```bash
+npm install
 npm start
 ```
 
-The server mounts routes under `/api`.
+Server starts on `http://localhost:PORT` and mounts API routes under `/api`.
 
 ## Scripts
 
 - `npm start`: start API server
 - `npm test`: run Jest tests
-- `node generate-keys.js`: generate and store hashed recovery keys for users that do not yet have one
+- `npm run test:functional`: run functional checks against a running backend (`BASE_URL` optional)
+- `node generate-keys.js`: backfill hashed recovery keys for users without one
 
-## Authentication
+## Auth Model
 
-Protected endpoints require:
+Protected endpoints accept token in either location:
 
 - Header: `x-auth-token: <jwt>`
+- Query param: `?token=<jwt>`
 
-JWT payload is signed with `JWT_SECRET` and contains:
+JWT payload contains:
 
-- `id`: user id
-- `username`: username
+- `id`
+- `username`
 
-JWT expiry: `2h`.
+JWT expiry is `2h`.
 
-Missing or invalid token responses:
+Auth failures return:
 
 - `401 { "error": "Access denied. No token provided." }`
 - `401 { "error": "Invalid or expired token." }`
 
-## Validation and Rate Limits
+## Validation and Limits
 
-- Common validation errors return:
-	- `400`
-	- Body:
-		```json
-		{
-			"error": "Validation failed.",
-			"details": [
-				{ "field": "fieldName", "message": "reason" }
-			]
-		}
-		```
-- `POST /api/login` is rate-limited to `5` attempts per `15` minutes per IP.
-- `POST /api/reset-with-key` is rate-limited to `3` attempts per `1` hour per IP.
+Validation errors use this shape:
 
-## Endpoint Summary
+```json
+{
+  "error": "Validation failed.",
+  "details": [
+    { "field": "fieldName", "message": "reason" }
+  ]
+}
+```
 
-| Method | Path | Auth Required | Purpose |
+Rate limits:
+
+- `POST /api/login`: `5` attempts per `15` minutes per IP
+- `POST /api/reset-with-key`: `3` attempts per `1` hour per IP
+
+## Endpoints
+
+| Method | Path | Auth | Description |
 |---|---|---|---|
-| `POST` | `/api/login` | No | Authenticate user and issue JWT |
-| `POST` | `/api/change-password` | Yes | Change password using current password |
-| `POST` | `/api/reset-with-key` | No | Reset password using recovery key |
-| `POST` | `/api/upload` | Yes | Upload file to Google Drive and store metadata |
-| `GET` | `/api/files` | Yes | List stored file metadata |
-| `GET` | `/api/files/:id/view` | Yes | View inline when supported, otherwise download |
-| `DELETE` | `/api/files/:id` | Yes | Delete file from Google Drive and DB |
+| `GET` | `/healthcheck` | No | Basic liveness check |
+| `POST` | `/api/login` | No | Login and issue JWT |
+| `POST` | `/api/change-password` | Yes | Change password with current password |
+| `POST` | `/api/reset-with-key` | No | Reset password with username + recovery key |
+| `POST` | `/api/upload` | Yes | Upload file (+ optional thumbnail) |
+| `GET` | `/api/files` | Yes | List files with pagination and filters |
+| `GET` | `/api/files/:id/view` | Yes | Stream file inline or as attachment |
+| `GET` | `/api/files/:id/thumbnail` | Yes | Stream uploaded custom thumbnail |
+| `DELETE` | `/api/files/:id` | Yes | Delete file and metadata |
 
-Note: `POST /api/register` exists in controller code but is currently disabled in routes (`src/routes/auth.js`).
+Note: `POST /api/register` exists in controller code but is currently disabled in `src/routes/auth.js`.
 
-## Endpoint Details
+## Endpoint Notes
+
+### `GET /healthcheck`
+
+- Response: `200 { "status": "ok", "message": "Server is awake!" }`
 
 ### `POST /api/login`
 
-Authenticate user and return JWT.
-
 Request body:
 
 ```json
 {
-	"username": "string",
-	"password": "string"
+  "username": "string",
+  "password": "string"
 }
 ```
 
-Validation expectations:
-
-- `username` required, non-empty string
-- `password` required, non-empty string
-
 Success response:
 
-- Status: `200`
-- Body:
-	```json
-	{
-		"token": "jwt_token",
-		"user": {
-			"id": "mongodb_object_id",
-			"username": "your_username"
-		}
-	}
-	```
+```json
+{
+  "token": "jwt_token",
+  "user": {
+    "id": "mongodb_object_id",
+    "username": "your_username"
+  }
+}
+```
 
-Possible errors:
-
-- `400 { "error": "Validation failed.", "details": [...] }`
-- `400 { "error": "Invalid credentials." }`
-- `429 { "error": "Too many login attempts. Try again in 15 minutes." }`
-- `500 { "error": "Server error during login." }`
+Common errors: `400`, `429`, `500`.
 
 ### `POST /api/change-password`
 
-Change password for authenticated user.
-
-Headers:
-
-- `x-auth-token: <jwt>`
-
 Request body:
 
 ```json
 {
-	"currentPassword": "string (min 8 chars)",
-	"newPassword": "string (min 8 chars)"
+  "currentPassword": "string (min 8 chars)",
+  "newPassword": "string (min 8 chars)"
 }
 ```
 
-Validation expectations:
-
-- `currentPassword` required, string, min length 8
-- `newPassword` required, string, min length 8
-
 Success response:
 
-- Status: `200`
-- Body:
-	```json
-	{
-		"success": true,
-		"message": "Password updated successfully."
-	}
-	```
+```json
+{
+  "success": true,
+  "message": "Password updated successfully."
+}
+```
 
-Possible errors:
-
-- `400 { "error": "Validation failed.", "details": [...] }`
-- `400 { "error": "Please provide both current and new passwords." }`
-- `400 { "error": "Incorrect current password." }`
-- `401 { "error": "Access denied. No token provided." }`
-- `401 { "error": "Invalid or expired token." }`
-- `404 { "error": "User not found." }`
-- `500 { "error": "Failed to change password." }`
+Common errors: `400`, `401`, `404`, `500`.
 
 ### `POST /api/reset-with-key`
 
-Reset password using username + recovery key.
-
 Request body:
 
 ```json
 {
-	"username": "alphanumeric string",
-	"recoveryKey": "XXXX-XXXX-XXXX-XXXX",
-	"newPassword": "string (min 8 chars)"
+  "username": "alphanumeric",
+  "recoveryKey": "XXXX-XXXX-XXXX-XXXX",
+  "newPassword": "string (min 8 chars)"
 }
 ```
 
-Validation expectations:
-
-- `username` required, string, alphanumeric only (`^[a-zA-Z0-9]+$`)
-- `recoveryKey` required, string, format `XXXX-XXXX-XXXX-XXXX` (`A-Z0-9` groups)
-- `newPassword` required, string, min length 8
-
 Success response:
 
-- Status: `200`
-- Body:
-	```json
-	{
-		"success": true,
-		"message": "Password updated successfully."
-	}
-	```
+```json
+{
+  "success": true,
+  "message": "Password updated successfully."
+}
+```
 
-Possible errors:
-
-- `400 { "error": "Validation failed.", "details": [...] }`
-- `400 { "error": "username, recoveryKey, and newPassword are required." }`
-- `400 { "error": "Invalid request or credentials." }`
-- `429 { "error": "Too many password reset attempts. Try again in 1 hour." }`
-- `500 { "error": "Failed to reset password." }`
+Common errors: `400`, `429`, `500`.
 
 ### `POST /api/upload`
 
-Upload a file to Google Drive and store metadata in MongoDB.
+Content type: `multipart/form-data`
 
-Headers:
+Form fields:
 
-- `x-auth-token: <jwt>`
-- `Content-Type: multipart/form-data`
+- `vaultFile` (required)
+- `vaultThumbnail` (optional custom thumbnail)
 
-Form data:
+Behavior:
 
-- `vaultFile` (file) - required
+- Files are first stored in OS temp directory.
+- File is uploaded to Google Drive.
+- Metadata is stored in MongoDB.
+- Temp files are cleaned up in `finally`.
+- Unknown file types are accepted and stored.
+- Max upload size: `50MB`.
 
-Recognized MIME types/extensions (used for MIME normalization and preview/download behavior):
+Success response includes `fileData` with fields like:
 
-- `image/jpeg`
-- `image/png`
-- `video/mp4`
-- `video/quicktime` (`.mov`)
-- `video/x-msvideo`, `video/avi`, `video/msvideo` (`.avi`)
-- `video/x-matroska`, `video/matroska`, `video/mkv` (`.mkv`)
-- `video/webm` (`.webm`)
-- `video/x-m4v` (`.m4v`)
-- `video/3gpp` (`.3gp`)
-- `video/3gpp2` (`.3g2`)
-- `audio/mpeg`, `audio/mp3`, `audio/x-mpeg` (`.mp3`)
-- `audio/flac`, `audio/x-flac` (`.flac`)
-- `audio/wav`, `audio/x-wav`, `audio/vnd.wave` (`.wav`)
-- `audio/mp4`, `audio/x-m4a` (`.m4a`)
-- `audio/ogg` (`.ogg`)
-- `audio/opus` (`.opus`)
-- `audio/aac`, `audio/x-aac` (`.aac`)
-- `audio/amr` (`.amr`)
-- `audio/x-ms-wma` (`.wma`)
-- `audio/aiff` (`.aiff`, `.aif`)
-- `application/pdf`
-- `application/msword` (`.doc`)
-- `application/vnd.openxmlformats-officedocument.wordprocessingml.document` (`.docx`)
-- `application/vnd.ms-excel` (`.xls`)
-- `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` (`.xlsx`)
-- `application/vnd.ms-powerpoint` (`.ppt`)
-- `application/vnd.openxmlformats-officedocument.presentationml.presentation` (`.pptx`)
-- `application/vnd.oasis.opendocument.text` (`.odt`)
-- `application/vnd.oasis.opendocument.spreadsheet` (`.ods`)
-- `application/vnd.oasis.opendocument.presentation` (`.odp`)
-- `text/csv` and `application/csv` (`.csv`)
-- `application/json` (`.json`)
-- `text/plain` (`.txt`)
-- `application/rtf` (`.rtf`)
-
-Other/unknown file types are also accepted and stored. If the backend cannot confidently classify them, it stores a fallback MIME type (`application/octet-stream`).
-
-Max file size: `50MB`.
-
-Success response:
-
-- Status: `200`
-- Body:
-	```json
-	{
-		"success": true,
-		"message": "File securely uploaded and recorded in Vault.",
-		"fileData": {
-			"_id": "mongodb_object_id",
-			"originalName": "filename.ext",
-			"driveFileId": "google_drive_id",
-			"thumbnailLink": "string_or_null",
-			"webViewLink": "string_or_null",
-			"mimeType": "image/png",
-			"uploadDate": "2026-03-09T00:00:00.000Z",
-			"__v": 0
-		}
-	}
-	```
-
-Possible errors:
-
-- `400 { "error": "No file uploaded." }`
-- `400 { "error": "File too large. Maximum allowed size is 50MB." }`
-- `401 { "error": "Access denied. No token provided." }`
-- `401 { "error": "Invalid or expired token." }`
-- `500 { "error": "Failed to upload file to the vault." }`
+- `_id`, `originalName`, `driveFileId`, `mimeType`, `uploadDate`
+- `thumbnailDriveFileId`, `thumbnailMimeType`, `thumbnailWebViewLink` (if thumbnail uploaded)
 
 ### `GET /api/files`
 
-Return all file metadata records sorted by newest upload first.
+Query params (optional):
 
-Sorting behavior:
+- `page` (default `1`)
+- `limit` (default `20`, max `100`)
+- `fileName` (case-insensitive partial match)
+- `fileType`
 
-- Primary sort: `uploadDate` descending
-- Secondary sort (tie-breaker): `_id` descending
+`fileType` behavior:
 
-Headers:
+- `media`: includes image/video, excludes HEIC/HEIF
+- `documents`: includes HEIC/HEIF and non media/audio types
+- other token (for example `pdf`, `.docx`, `application/json`): matches MIME type or extension
 
-- `x-auth-token: <jwt>`
+Sort order: `uploadDate` desc, then `_id` desc.
 
-Query params (all optional):
+Response includes:
 
-- `page` (integer, >= 1, default: `1`)
-- `limit` (integer, 1 to 100, default: `20`)
-- `fileType` (string, case-insensitive match against either `mimeType` or file extension in `originalName`; examples: `pdf`, `.docx`, `application/json`)
-- `fileName` (string, case-insensitive partial match against `originalName`)
-
-Request body: none.
-
-Success response:
-
-- Status: `200`
-- Body:
-	```json
-	{
-		"success": true,
-		"files": [
-			{
-				"_id": "mongodb_object_id",
-				"originalName": "filename.ext",
-				"driveFileId": "google_drive_id",
-				"thumbnailLink": "string_or_null",
-				"webViewLink": "string_or_null",
-				"mimeType": "application/pdf",
-				"uploadDate": "2026-03-09T00:00:00.000Z",
-				"__v": 0
-			}
-		],
-		"pagination": {
-			"page": 1,
-			"limit": 20,
-			"total": 42,
-			"totalPages": 3,
-			"hasNextPage": true,
-			"hasPrevPage": false
-		}
-	}
-	```
-
-Example request:
-
-- `GET /api/files?page=1&limit=10&fileType=image&fileName=invoice`
-
-Pagination edge case:
-
-- When no records match, `files` is empty and `pagination.totalPages` is `0`.
-
-Possible errors:
-
-- `400 { "error": "Validation failed.", "details": [...] }`
-- `401 { "error": "Access denied. No token provided." }`
-- `401 { "error": "Invalid or expired token." }`
-- `500 { "error": "Could not retrieve the vault contents." }`
+- `files`: array
+- `pagination`: `page`, `limit`, `total`, `totalPages`, `hasNextPage`, `hasPrevPage`
 
 ### `GET /api/files/:id/view`
 
-Fetch file content from Google Drive and return it with browser-friendly disposition logic.
+Streams binary content from Drive.
 
-Headers:
+Query params:
 
-- `x-auth-token: <jwt>`
+- `download=1` or `download=true`: forces attachment download
 
-Path params:
+Disposition behavior:
 
-- `id`: MongoDB ObjectId of file record
+- `inline` for known preview-safe MIME types
+- `attachment` for everything else
 
-Success response:
+Content type fallback is `application/octet-stream`.
 
-- Status: `200`
-- Content type: set from stored/inferred MIME type (fallback `application/octet-stream`)
-- Content disposition:
-	- `inline` for preview-safe types:
-		- images: `image/jpeg`, `image/png`
-		- video: `video/mp4`, `video/quicktime`, `video/x-msvideo`, `video/avi`, `video/msvideo`, `video/x-matroska`, `video/matroska`, `video/mkv`, `video/webm`, `video/x-m4v`, `video/3gpp`, `video/3gpp2`
-		- audio: `audio/mpeg`, `audio/mp3`, `audio/x-mpeg`, `audio/flac`, `audio/x-flac`, `audio/wav`, `audio/x-wav`, `audio/vnd.wave`, `audio/mp4`, `audio/x-m4a`, `audio/ogg`, `audio/opus`, `audio/aac`, `audio/x-aac`, `audio/amr`, `audio/x-ms-wma`, `audio/aiff`
-		- document/text: `application/pdf`, `text/plain`, `text/csv`, `application/json`
-	- `attachment` for all other types (including unknown types), which triggers download in most clients
-- Body: binary stream (not JSON)
+### `GET /api/files/:id/thumbnail`
 
-Possible errors:
+Streams uploaded custom thumbnail from Drive.
 
-- `400 { "error": "Invalid file ID." }`
-- `401 { "error": "Access denied. No token provided." }`
-- `401 { "error": "Invalid or expired token." }`
-- `404 { "error": "File not found." }`
-- `500 { "error": "Failed to stream the file." }`
+Errors:
+
+- `404` when the file has no uploaded custom thumbnail
+- `500` on fetch/stream errors
 
 ### `DELETE /api/files/:id`
 
-Delete file from Google Drive and remove metadata from MongoDB.
+Deletes:
 
-Headers:
-
-- `x-auth-token: <jwt>`
-
-Path params:
-
-- `id`: MongoDB ObjectId of file record
+- main file from Google Drive
+- custom thumbnail from Google Drive (best-effort)
+- file record from MongoDB
 
 Success response:
 
-- Status: `200`
-- Body:
-	```json
-	{
-		"success": true,
-		"message": "File permanently deleted from Vault."
-	}
-	```
+```json
+{
+  "success": true,
+  "message": "File permanently deleted from Vault."
+}
+```
 
-Possible errors:
+## Current Behavior and Constraints
 
-- `400 { "error": "Invalid file ID." }`
-- `401 { "error": "Access denied. No token provided." }`
-- `401 { "error": "Invalid or expired token." }`
-- `404 { "error": "File not found." }`
-- `500 { "error": "Failed to delete the file." }`
-
-## Notes and Current Behavior
-
-- User registration endpoint is currently commented out in routes, so new users cannot be created through API until it is re-enabled.
-- File records are currently global in `GET /api/files` (not user-scoped).
-- Temporary upload files are stored in OS temp directory and cleaned up after upload attempt.
-- Unknown file types are accepted on upload and are served as downloadable attachments on `GET /api/files/:id/view`.
-- Request logs include method, path, status code, and duration.
+- Registration route is disabled.
+- File records are not user-scoped (global list across all users).
+- CORS is enabled with default settings.
+- Request logger logs method, path, status code, and duration.

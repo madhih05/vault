@@ -17,6 +17,7 @@ import {
 
 const THUMBNAIL_SIZE = 150
 const THUMBNAIL_QUALITY = 0.78
+const MAX_VIDEO_THUMBNAIL_SOURCE_BYTES = 45 * 1024 * 1024
 const SWIPE_THRESHOLD = 40
 const CACHE_TTL_MS = 60 * 1000
 const PULL_TO_REFRESH_THRESHOLD = 72
@@ -181,6 +182,11 @@ const createUploadThumbnail = async (file) => {
   }
 
   if (file.type.startsWith('video/')) {
+    // Avoid decoding very large sources in WebView during upload preparation.
+    if ((file?.size || 0) > MAX_VIDEO_THUMBNAIL_SOURCE_BYTES) {
+      return null
+    }
+
     return createVideoThumbnailBlob(file)
   }
 
@@ -203,6 +209,7 @@ function VaultDashboard() {
 
   const [galleryFiles, setGalleryFiles] = useState([])
   const [docFiles, setDocFiles] = useState([])
+  const [audioFiles, setAudioFiles] = useState([])
   const [galleryPage, setGalleryPage] = useState(1)
   const [galleryHasNextPage, setGalleryHasNextPage] = useState(false)
   const [isFetchingMoreGallery, setIsFetchingMoreGallery] = useState(false)
@@ -242,7 +249,7 @@ function VaultDashboard() {
   const tabCacheMetaRef = useRef({
     gallery: { loaded: false, lastFetchedAt: 0, query: '', filter: 'media' },
     docs: { loaded: false, lastFetchedAt: 0, query: '', filter: 'documents' },
-    audio: { loaded: true, lastFetchedAt: 0, query: '', filter: '' },
+    audio: { loaded: false, lastFetchedAt: 0, query: '', filter: 'audio' },
   })
   const pullStartYRef = useRef(null)
   const [pullDistance, setPullDistance] = useState(0)
@@ -276,7 +283,9 @@ function VaultDashboard() {
     return Math.min(100, Math.round((uploadedBytes / totalBytes) * 100))
   }, [uploadQueueItems])
 
-  const hasUploadActivity = uploadQueueItems.some((item) => item.status === 'queued' || item.status === 'uploading')
+  const hasUploadActivity = uploadQueueItems.some(
+    (item) => item.status === 'queued' || item.status === 'uploading',
+  )
 
   useEffect(() => {
     if (!uploadQueueItems.length || hasUploadActivity) {
@@ -335,6 +344,19 @@ function VaultDashboard() {
     setDocFiles(docs)
   }
 
+  const loadAudioFiles = async ({ fileName }) => {
+    const response = await listFiles({
+      page: 1,
+      limit: 100,
+      fileType: 'audio',
+      ...(fileName ? { fileName } : {}),
+    })
+
+    const audios = response.files || []
+    audios.sort((a, b) => new Date(b.uploadDate) - new Date(a.uploadDate))
+    setAudioFiles(audios)
+  }
+
   const updateTabCacheMeta = (tab, query, filter) => {
     tabCacheMetaRef.current[tab] = {
       loaded: true,
@@ -362,11 +384,8 @@ function VaultDashboard() {
   }
 
   const refreshActiveTab = async ({ force = false } = {}) => {
-    if (activeTab === 'audio') {
-      return
-    }
-
-    const activeFilter = activeTab === 'gallery' ? filterByTab.gallery : filterByTab.docs
+    const activeFilter =
+      activeTab === 'gallery' ? filterByTab.gallery : activeTab === 'docs' ? filterByTab.docs : 'audio'
     if (!shouldFetchTab(activeTab, searchQuery, activeFilter, force)) {
       return
     }
@@ -382,10 +401,14 @@ function VaultDashboard() {
           page: 1,
           append: false,
         })
-      } else {
+      } else if (activeTab === 'docs') {
         await loadDocFiles({
           fileName: searchQuery,
           filterType: filterByTab.docs,
+        })
+      } else {
+        await loadAudioFiles({
+          fileName: searchQuery,
         })
       }
 
@@ -539,7 +562,7 @@ function VaultDashboard() {
   }, [activeTab])
 
   const handleTouchStart = (event) => {
-    if (window.scrollY > 0 || activeTab === 'audio' || loading || isRefreshing) {
+    if (window.scrollY > 0 || loading || isRefreshing) {
       pullStartYRef.current = null
       return
     }
@@ -670,22 +693,27 @@ function VaultDashboard() {
           console.warn('Thumbnail generation failed. Uploading without custom thumbnail.', thumbnailError)
         }
 
-        await uploadVaultFile(nextItem.file, thumbnailBlob, (progressEvent) => {
-          const total = progressEvent?.total || nextItem.size || 1
-          const loaded = progressEvent?.loaded || 0
-          const percent = Math.max(1, Math.min(100, Math.round((loaded / total) * 100)))
+        await uploadVaultFile(
+          nextItem.file,
+          thumbnailBlob,
+          (progressEvent) => {
+            const total = progressEvent?.total || nextItem.size || 1
+            const loaded = progressEvent?.loaded || 0
+            const percent = Math.max(1, Math.min(100, Math.round((loaded / total) * 100)))
 
-          setUploadQueueItems((previous) =>
-            previous.map((entry) =>
-              entry.id === nextItem.id
-                ? {
-                    ...entry,
-                    progress: percent,
-                  }
-                : entry,
-            ),
-          )
-        })
+            setUploadQueueItems((previous) =>
+              previous.map((entry) =>
+                entry.id === nextItem.id
+                  ? {
+                      ...entry,
+                      status: 'uploading',
+                      progress: percent,
+                    }
+                  : entry,
+              ),
+            )
+          },
+        )
 
         hadSuccessfulUploads = true
         setUploadQueueItems((previous) =>
@@ -823,6 +851,7 @@ function VaultDashboard() {
       evictSecureFileCache(fileId)
       setGalleryFiles((previous) => previous.filter((file) => file._id !== fileId))
       setDocFiles((previous) => previous.filter((file) => file._id !== fileId))
+      setAudioFiles((previous) => previous.filter((file) => file._id !== fileId))
 
       if (activeLightboxFile?._id === fileId) {
         setLightboxIndex(-1)
@@ -1058,7 +1087,7 @@ function VaultDashboard() {
       ) : null}
 
       <section className="pb-28 pt-1" style={{ transform: `translateY(${pullDistance}px)` }}>
-        {(pullDistance > 0 || isRefreshing) && activeTab !== 'audio' ? (
+        {pullDistance > 0 || isRefreshing ? (
           <div className="px-3 py-2 text-center text-xs text-slate-400">
             {isRefreshing
               ? 'Refreshing...'
@@ -1190,18 +1219,36 @@ function VaultDashboard() {
         ) : null}
 
         {activeTab === 'audio' ? (
-          <div className="flex min-h-[45vh] flex-col items-center justify-center px-6 text-center text-slate-400">
-            <div className="mb-4 rounded-full bg-slate-900 p-4 text-cyan-300">
-              <svg viewBox="0 0 24 24" fill="none" className="h-10 w-10" stroke="currentColor" strokeWidth="1.6">
-                <path d="M5 9v6" />
-                <path d="M9 6v12" />
-                <path d="M13 10v4" />
-                <path d="M17 8v8" />
-              </svg>
-            </div>
-            <p className="text-base font-medium text-slate-200">No audio files uploaded.</p>
-            <p className="mt-1 text-sm text-slate-500">Audio support will be added in a future update.</p>
-          </div>
+          loading ? (
+            <p className="px-3 py-4 text-sm text-slate-400">Loading audio files...</p>
+          ) : audioFiles.length ? (
+            <ul className="divide-y divide-slate-800">
+              {audioFiles.map((file) => (
+                <li key={file._id} className="px-3 py-3">
+                  <div className="mb-1 flex items-start justify-between gap-3">
+                    <p className="truncate text-sm font-medium text-slate-100">{file.originalName}</p>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteById(file._id)}
+                      disabled={deletingId === file._id}
+                      className="rounded-md px-2 py-1 text-xs font-semibold text-red-300 transition hover:bg-red-950/50 disabled:opacity-50"
+                    >
+                      {deletingId === file._id ? 'Deleting...' : 'Delete'}
+                    </button>
+                  </div>
+                  <p className="mb-2 text-xs text-slate-500">{new Date(file.uploadDate).toLocaleString()}</p>
+                  <audio
+                    controls
+                    preload="none"
+                    src={buildSecureFileViewUrl(file._id, { token: getToken() })}
+                    className="w-full"
+                  />
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="px-3 py-6 text-sm text-slate-400">No audio files found.</p>
+          )
         ) : null}
       </section>
 
