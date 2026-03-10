@@ -1,6 +1,7 @@
 import axios from "axios";
 
 const TOKEN_STORAGE_KEY = "vault_jwt";
+const secureFileCache = new Map();
 
 function normalizeApiBaseUrl(rawBaseUrl) {
     const normalized = (rawBaseUrl || "https://secretvault.madhih.in").replace(
@@ -41,6 +42,7 @@ export function setToken(token) {
 
 export function clearToken() {
     sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+    clearSecureFileCache();
 }
 
 export function isAuthenticated() {
@@ -71,6 +73,29 @@ export async function login({ username, password }) {
 
     setToken(token);
     return token;
+}
+
+export async function changePassword({ currentPassword, newPassword }) {
+    const response = await api.post("/change-password", {
+        currentPassword,
+        newPassword,
+    });
+
+    return response.data;
+}
+
+export async function resetPasswordWithKey({
+    username,
+    recoveryKey,
+    newPassword,
+}) {
+    const response = await api.post("/reset-with-key", {
+        username,
+        recoveryKey,
+        newPassword,
+    });
+
+    return response.data;
 }
 
 export async function listFiles({
@@ -155,14 +180,47 @@ export async function fetchSecureFileBlob(fileId) {
 }
 
 export async function fetchSecureFileObjectUrl(fileId) {
+    const cached = secureFileCache.get(fileId);
+    if (cached) {
+        return {
+            ...cached,
+            fromCache: true,
+        };
+    }
+
     const { blob, contentType } = await fetchSecureFileBlob(fileId);
     const objectUrl = URL.createObjectURL(blob);
 
-    return {
+    const payload = {
         blob,
         objectUrl,
         contentType,
     };
+
+    secureFileCache.set(fileId, payload);
+
+    return {
+        ...payload,
+        fromCache: false,
+    };
+}
+
+export function evictSecureFileCache(fileId) {
+    const cached = secureFileCache.get(fileId);
+    if (!cached) {
+        return;
+    }
+
+    secureFileCache.delete(fileId);
+    revokeObjectUrl(cached.objectUrl);
+}
+
+export function clearSecureFileCache() {
+    for (const entry of secureFileCache.values()) {
+        revokeObjectUrl(entry.objectUrl);
+    }
+
+    secureFileCache.clear();
 }
 
 export function revokeObjectUrl(objectUrl) {

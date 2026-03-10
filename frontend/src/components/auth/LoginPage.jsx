@@ -1,12 +1,21 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { login } from '../../services/api'
+import { login, resetPasswordWithKey } from '../../services/api'
 
 function LoginPage() {
   const navigate = useNavigate()
   const [formState, setFormState] = useState({ username: '', password: '' })
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
+  const [resetOpen, setResetOpen] = useState(false)
+  const [resetSubmitting, setResetSubmitting] = useState(false)
+  const [resetErrorMessage, setResetErrorMessage] = useState('')
+  const [resetSuccessMessage, setResetSuccessMessage] = useState('')
+  const [resetFormState, setResetFormState] = useState({
+    username: '',
+    recoveryKey: '',
+    newPassword: '',
+  })
 
   const canSubmit = useMemo(() => {
     return formState.username.trim() && formState.password.trim() && !isSubmitting
@@ -15,6 +24,11 @@ function LoginPage() {
   const handleInputChange = (event) => {
     const { name, value } = event.target
     setFormState((previous) => ({ ...previous, [name]: value }))
+  }
+
+  const handleResetInputChange = (event) => {
+    const { name, value } = event.target
+    setResetFormState((previous) => ({ ...previous, [name]: value }))
   }
 
   const handleSubmit = async (event) => {
@@ -37,6 +51,32 @@ function LoginPage() {
       setErrorMessage(message)
     } finally {
       setIsSubmitting(false)
+    }
+  }
+
+  const handleResetPassword = async (event) => {
+    event.preventDefault()
+    setResetSubmitting(true)
+    setResetErrorMessage('')
+    setResetSuccessMessage('')
+
+    try {
+      await resetPasswordWithKey({
+        username: resetFormState.username.trim(),
+        recoveryKey: resetFormState.recoveryKey.trim().toUpperCase(),
+        newPassword: resetFormState.newPassword,
+      })
+      setResetSuccessMessage('Password reset successful. You can now sign in.')
+      setResetFormState({ username: '', recoveryKey: '', newPassword: '' })
+    } catch (error) {
+      const message =
+        error?.response?.data?.error ||
+        error?.response?.data?.message ||
+        error?.message ||
+        'Unable to reset password. Please verify your details.'
+      setResetErrorMessage(message)
+    } finally {
+      setResetSubmitting(false)
     }
   }
 
@@ -106,10 +146,103 @@ function LoginPage() {
               >
                 {isSubmitting ? 'Authenticating...' : 'Enter Vault'}
               </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setResetOpen(true)
+                  setResetErrorMessage('')
+                  setResetSuccessMessage('')
+                }}
+                className="inline-flex w-full items-center justify-center rounded-xl border border-slate-600 px-4 py-3 text-sm font-semibold text-slate-200 transition hover:bg-slate-800"
+              >
+                Reset Password
+              </button>
             </form>
           </div>
         </section>
       </div>
+
+      {resetOpen ? (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/75 p-4">
+          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h3 className="font-serif text-xl text-slate-100">Reset Password</h3>
+              <button
+                type="button"
+                className="rounded-md px-2 py-1 text-slate-400 hover:bg-slate-800"
+                onClick={() => setResetOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+
+            <form className="space-y-4" onSubmit={handleResetPassword}>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="reset-username">
+                  Username
+                </label>
+                <input
+                  id="reset-username"
+                  name="username"
+                  type="text"
+                  value={resetFormState.username}
+                  onChange={handleResetInputChange}
+                  required
+                  className="w-full rounded-xl border border-slate-600 bg-slate-900 px-4 py-3 text-slate-100 outline-none placeholder:text-slate-500 focus:border-cyan-400 focus:ring-4 focus:ring-cyan-900/40"
+                />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="reset-recovery-key">
+                  Secret Phrase
+                </label>
+                <input
+                  id="reset-recovery-key"
+                  name="recoveryKey"
+                  type="text"
+                  placeholder="XXXX-XXXX-XXXX-XXXX"
+                  value={resetFormState.recoveryKey}
+                  onChange={handleResetInputChange}
+                  required
+                  className="w-full rounded-xl border border-slate-600 bg-slate-900 px-4 py-3 text-slate-100 outline-none placeholder:text-slate-500 focus:border-cyan-400 focus:ring-4 focus:ring-cyan-900/40"
+                />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="reset-new-password">
+                  New Password
+                </label>
+                <input
+                  id="reset-new-password"
+                  name="newPassword"
+                  type="password"
+                  value={resetFormState.newPassword}
+                  onChange={handleResetInputChange}
+                  required
+                  className="w-full rounded-xl border border-slate-600 bg-slate-900 px-4 py-3 text-slate-100 outline-none placeholder:text-slate-500 focus:border-cyan-400 focus:ring-4 focus:ring-cyan-900/40"
+                />
+              </div>
+
+              {resetErrorMessage ? (
+                <p className="rounded-lg border border-red-500/50 bg-red-950/40 px-3 py-2 text-sm text-red-200">{resetErrorMessage}</p>
+              ) : null}
+
+              {resetSuccessMessage ? (
+                <p className="rounded-lg border border-emerald-500/40 bg-emerald-950/40 px-3 py-2 text-sm text-emerald-200">{resetSuccessMessage}</p>
+              ) : null}
+
+              <button
+                type="submit"
+                disabled={resetSubmitting}
+                className="inline-flex w-full items-center justify-center rounded-xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {resetSubmitting ? 'Resetting...' : 'Reset Password'}
+              </button>
+            </form>
+          </div>
+        </div>
+      ) : null}
     </main>
   )
 }
