@@ -144,7 +144,10 @@ function normalizeNativeFileUri(uri = "") {
         return "";
     }
 
-    if (normalized.startsWith("content://") || normalized.startsWith("file://")) {
+    if (
+        normalized.startsWith("content://") ||
+        normalized.startsWith("file://")
+    ) {
         return normalized;
     }
 
@@ -156,12 +159,7 @@ function normalizeNativeFileUri(uri = "") {
 }
 
 function getNativeInputUriFromFile(file) {
-    const candidates = [
-        file?.path,
-        file?.nativeURL,
-        file?.localURL,
-        file?.uri,
-    ];
+    const candidates = [file?.path, file?.nativeURL, file?.localURL, file?.uri];
 
     for (const candidate of candidates) {
         const uri = normalizeNativeFileUri(candidate);
@@ -228,7 +226,9 @@ async function readTranscodedAsBase64(resultPath, fallbackName) {
 }
 
 async function readTranscodedAsBlob(resultPath) {
-    const candidates = [resultPath, stripFileScheme(resultPath)].filter(Boolean);
+    const candidates = [resultPath, stripFileScheme(resultPath)].filter(
+        Boolean,
+    );
 
     for (const candidate of candidates) {
         try {
@@ -330,7 +330,9 @@ async function compressVideoNative(file) {
         }
 
         if (!inputUriValue) {
-            throw new Error("Unable to access source video URI for compression.");
+            throw new Error(
+                "Unable to access source video URI for compression.",
+            );
         }
 
         const transcodeResult = await transcodeVideoWithPlugin(videoEditor, {
@@ -371,9 +373,7 @@ async function compressVideoNative(file) {
         }
 
         if (outputBlob.size >= file.size) {
-            throw new Error(
-                "Video compression did not reduce file size.",
-            );
+            throw new Error("Video compression did not reduce file size.");
         }
 
         const outputName = `${sanitizeBaseName(file.name)}.mp4`;
