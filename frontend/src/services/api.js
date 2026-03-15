@@ -1,5 +1,8 @@
 import axios from "axios";
-import { compressMedia } from "./mediaCompressor";
+import {
+    compressMedia,
+    isCompressibleMediaMimeType,
+} from "./mediaCompressor";
 
 const TOKEN_STORAGE_KEY = "vault_jwt";
 const secureFileCache = new Map();
@@ -149,13 +152,23 @@ export async function uploadVaultFile(
     onStageChange,
 ) {
     const mimeType = String(file?.type || "").toLowerCase();
-    const isImageFile = mimeType.startsWith("image/");
+    const isVideoFile = mimeType.startsWith("video/");
+    const shouldCompress = isCompressibleMediaMimeType(mimeType);
 
-    if (isImageFile) {
+    if (shouldCompress) {
         onStageChange?.("compressing");
     }
 
-    const fileToUpload = isImageFile ? await compressMedia(file) : file;
+    const fileToUpload = shouldCompress ? await compressMedia(file) : file;
+
+    if (
+        isVideoFile &&
+        (!fileToUpload || fileToUpload.size >= (file?.size || Number.MAX_SAFE_INTEGER))
+    ) {
+        throw new Error(
+            "Video was not compressed successfully. Upload has been canceled.",
+        );
+    }
 
     onStageChange?.("uploading");
 

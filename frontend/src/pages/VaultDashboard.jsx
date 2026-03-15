@@ -284,7 +284,7 @@ function VaultDashboard() {
   }, [uploadQueueItems])
 
   const hasUploadActivity = uploadQueueItems.some(
-    (item) => item.status === 'queued' || item.status === 'uploading',
+    (item) => item.status === 'queued' || item.status === 'compressing' || item.status === 'uploading',
   )
 
   useEffect(() => {
@@ -676,7 +676,9 @@ function VaultDashboard() {
           entry.id === nextItem.id
             ? {
                 ...entry,
-                status: 'uploading',
+                status: nextItem.file?.type?.toLowerCase()?.startsWith('video/')
+                  ? 'compressing'
+                  : 'uploading',
                 progress: Math.max(1, entry.progress),
                 error: '',
               }
@@ -708,6 +710,22 @@ function VaultDashboard() {
                       ...entry,
                       status: 'uploading',
                       progress: percent,
+                    }
+                  : entry,
+              ),
+            )
+          },
+          (stage) => {
+            if (stage !== 'compressing' && stage !== 'uploading') {
+              return
+            }
+
+            setUploadQueueItems((previous) =>
+              previous.map((entry) =>
+                entry.id === nextItem.id
+                  ? {
+                      ...entry,
+                      status: stage,
                     }
                   : entry,
               ),
@@ -1317,6 +1335,8 @@ function VaultDashboard() {
                 const statusLabel =
                   item.status === 'uploading'
                     ? 'Uploading'
+                    : item.status === 'compressing'
+                    ? 'Compressing'
                     : item.status === 'queued'
                     ? 'Queued'
                     : item.status === 'failed'
@@ -1333,7 +1353,7 @@ function VaultDashboard() {
                             ? 'text-red-300'
                             : item.status === 'completed'
                             ? 'text-emerald-300'
-                            : item.status === 'uploading'
+                            : item.status === 'uploading' || item.status === 'compressing'
                             ? 'text-cyan-300'
                             : 'text-slate-400'
                         }`}
