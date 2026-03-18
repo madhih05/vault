@@ -7,10 +7,11 @@ Fresh React Native frontend using Expo, replacing the previous web implementatio
 1. `cd frontend`
 2. `npm install`
 3. Set API base URL (must include host/port that your phone or emulator can reach):
-   - `EXPO_PUBLIC_API_BASE_URL=http://<your-lan-ip>:3000`
+    - `EXPO_PUBLIC_API_BASE_URL=http://<your-lan-ip>:3000`
 4. `npm run start`
 
 Notes:
+
 - The app automatically appends `/api` if your base URL does not include it.
 - Auth token is stored in AsyncStorage under `vault_jwt`.
 
@@ -35,52 +36,52 @@ Base URL: `<server>/api` (except `/healthcheck`)
 ### Public
 
 - `GET /healthcheck`
-  - Response: `{ status: "ok", message: "Server is awake!" }`
+    - Response: `{ status: "ok", message: "Server is awake!" }`
 - `POST /api/login`
-  - Body: `{ username, password }`
-  - Success: `{ token, user: { id, username } }`
-  - Rate limit: 5 attempts per 15 minutes (per IP)
+    - Body: `{ username, password }`
+    - Success: `{ token, user: { id, username } }`
+    - Rate limit: 5 attempts per 15 minutes (per IP)
 - `POST /api/reset-with-key`
-  - Body: `{ username, recoveryKey, newPassword }`
-  - Validation: `recoveryKey` format `XXXX-XXXX-XXXX-XXXX`
-  - Rate limit: 3 attempts per hour (per IP)
+    - Body: `{ username, recoveryKey, newPassword }`
+    - Validation: `recoveryKey` format `XXXX-XXXX-XXXX-XXXX`
+    - Rate limit: 3 attempts per hour (per IP)
 
 ### Authenticated
 
 Header: `x-auth-token: <jwt>`
 
 - `POST /api/change-password`
-  - Body: `{ currentPassword, newPassword }`
+    - Body: `{ currentPassword, newPassword }`
 - `POST /api/upload`
-  - Multipart fields:
-    - `vaultFile` (required)
-    - `vaultThumbnail` (optional)
-  - Limit: 50MB (multer)
+    - Multipart fields:
+        - `vaultFile` (required)
+        - `vaultThumbnail` (optional)
+    - Limit: 50MB (multer)
 - `POST /api/upload/init`
-  - Body: `{ fileName, mimeType, fileSize }`
-  - Returns resumable `uploadUrl` and `uploadSessionId`
+    - Body: `{ fileName, mimeType, fileSize }`
+    - Returns resumable `uploadUrl` and `uploadSessionId`
 - `POST /api/upload/finalize`
-  - Multipart fields:
-    - `fileName`, `mimeType`, `size`
-    - `fileId` or `uploadSessionId` (one required)
-    - `vaultThumbnail` (optional)
+    - Multipart fields:
+        - `fileName`, `mimeType`, `size`
+        - `fileId` or `uploadSessionId` (one required)
+        - `vaultThumbnail` (optional)
 - `POST /api/files/sync`
-  - Triggers Drive index sync
+    - Triggers Drive index sync
 - `GET /api/files`
-  - Query:
-    - `page` (default 1)
-    - `limit` (default 20, max 100)
-    - `fileType` (`media`, `documents`, `audio`, extension token, mime token)
-    - `fileName` (partial, case-insensitive)
-  - Success: `{ success, files, pagination }`
+    - Query:
+        - `page` (default 1)
+        - `limit` (default 20, max 100)
+        - `fileType` (`media`, `documents`, `audio`, extension token, mime token)
+        - `fileName` (partial, case-insensitive)
+    - Success: `{ success, files, pagination }`
 - `GET /api/files/:id/view`
-  - Optional query: `download=1|true`
-  - Streams file with inline/attachment disposition depending on type
+    - Optional query: `download=1|true`
+    - Streams file with inline/attachment disposition depending on type
 - `GET /api/files/:id/thumbnail`
-  - Streams uploaded custom thumbnail only
-  - 404 when custom thumbnail does not exist
+    - Streams uploaded custom thumbnail only
+    - 404 when custom thumbnail does not exist
 - `DELETE /api/files/:id`
-  - Deletes Drive file + DB record (+ thumbnail best-effort)
+    - Deletes Drive file + DB record (+ thumbnail best-effort)
 
 ## Data Model Notes (From Backend)
 
