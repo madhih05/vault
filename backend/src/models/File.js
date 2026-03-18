@@ -1,6 +1,11 @@
 const mongoose = require("mongoose");
 
 const fileSchema = new mongoose.Schema({
+    userId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+        index: true,
+    },
     originalName: { type: String, required: true },
     driveFileId: { type: String, required: true }, // The key to fetch the file later
     thumbnailLink: { type: String }, // Legacy Google generated thumbnail URL

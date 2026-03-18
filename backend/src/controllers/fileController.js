@@ -1,14 +1,8 @@
 const File = require("../models/File");
-const fs = require("fs");
 const path = require("path");
-const crypto = require("crypto");
 const mongoose = require("mongoose");
 const logger = require("../logger");
-const { drive, folderId, oauth2Client } = require("../config/googleDrive");
-const {
-    allowedMimeTypes,
-    allowedFileExtensions,
-} = require("../middleware/upload");
+const { drive, folderId } = require("../config/googleDrive");
 
 const extensionToMimeType = {
     ".jpg": "image/jpeg",
@@ -94,20 +88,6 @@ function escapeRegExp(value) {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function resolveMimeType(file) {
-    const extension = path.extname(file.originalname || "").toLowerCase();
-
-    if (allowedMimeTypes.has(file.mimetype)) {
-        return file.mimetype;
-    }
-
-    if (allowedFileExtensions.has(extension)) {
-        return extensionToMimeType[extension] || "application/octet-stream";
-    }
-
-    return file.mimetype || "application/octet-stream";
-}
-
 function buildContentDisposition(dispositionType, fileName) {
     const asciiSafeFileName = (fileName || "download")
         .replace(/[\r\n]/g, "")
@@ -118,6 +98,7 @@ function buildContentDisposition(dispositionType, fileName) {
 
 function buildFileRecordData({
     driveMetadata,
+    userId,
     fileName,
     driveFileId,
     mimeType,
@@ -127,6 +108,7 @@ function buildFileRecordData({
     thumbnailWebViewLink,
 }) {
     return {
+        userId,
         originalName: driveMetadata?.name || fileName,
         driveFileId: driveFileId || driveMetadata?.id,
         thumbnailLink: driveMetadata?.thumbnailLink,
@@ -295,156 +277,42 @@ async function syncUnindexedFiles(req, res) {
     }
 }
 
-async function uploadFile(req, res) {
-    const uploadedFile = req.files?.vaultFile?.[0] || req.file;
-    const uploadedThumbnail = req.files?.vaultThumbnail?.[0];
-    const tempFilePath = uploadedFile?.path;
-    const tempThumbnailPath = uploadedThumbnail?.path;
-
-    try {
-        if (!uploadedFile) {
-            logger.warn("Upload attempted without a file");
-            return res.status(400).json({ error: "No file uploaded." });
-        }
-
-        logger.info("Receiving upload", {
-            originalName: uploadedFile.originalname,
-            mimeType: uploadedFile.mimetype,
-            fileSize: uploadedFile.size,
-            isRecognizedType: uploadedFile.isRecognizedType,
-            hasCustomThumbnail: Boolean(uploadedThumbnail),
-        });
-
-        const resolvedMimeType = resolveMimeType(uploadedFile);
-
-        const driveResponse = await drive.files.create({
-            requestBody: {
-                name: uploadedFile.originalname,
-                parents: [folderId],
-            },
-            media: {
-                mimeType: resolvedMimeType,
-                body: fs.createReadStream(tempFilePath),
-            },
-            fields: "id, name, webViewLink, thumbnailLink",
-        });
-
-        let thumbnailDriveResponse = null;
-        if (uploadedThumbnail) {
-            const baseName = path.parse(
-                uploadedFile.originalname || "file",
-            ).name;
-            const thumbnailName = `${baseName}-thumb.jpg`;
-
-            thumbnailDriveResponse = await drive.files.create({
-                requestBody: {
-                    name: thumbnailName,
-                    parents: [folderId],
-                },
-                media: {
-                    mimeType: uploadedThumbnail.mimetype || "image/jpeg",
-                    body: fs.createReadStream(tempThumbnailPath),
-                },
-                fields: "id, webViewLink",
-            });
-        }
-
-        logger.info("Drive upload completed", {
-            originalName: uploadedFile.originalname,
-            driveFileId: driveResponse.data.id,
-            thumbnailDriveFileId: thumbnailDriveResponse?.data?.id,
-        });
-
-        const newFileRecord = new File({
-            originalName: driveResponse.data.name,
-            driveFileId: driveResponse.data.id,
-            thumbnailLink: driveResponse.data.thumbnailLink,
-            thumbnailDriveFileId: thumbnailDriveResponse?.data?.id,
-            thumbnailMimeType: uploadedThumbnail?.mimetype || "image/jpeg",
-            thumbnailWebViewLink: thumbnailDriveResponse?.data?.webViewLink,
-            webViewLink: driveResponse.data.webViewLink,
-            mimeType: resolvedMimeType,
-        });
-
-        await newFileRecord.save();
-
-        logger.info("Database record created", {
-            dbId: newFileRecord._id,
-            driveFileId: driveResponse.data.id,
-        });
-
-        return res.status(200).json({
-            success: true,
-            message: "File securely uploaded and recorded in Vault.",
-            fileData: newFileRecord,
-        });
-    } catch (error) {
-        logger.error("Upload failed", {
-            message: error.message,
-            stack: error.stack,
-        });
-
-        return res.status(500).json({
-            error: "Failed to upload file to the vault.",
-        });
-    } finally {
-        if (tempFilePath && fs.existsSync(tempFilePath)) {
-            try {
-                fs.unlinkSync(tempFilePath);
-            } catch (cleanupError) {
-                logger.warn("Failed to clean up temporary upload file", {
-                    filePath: tempFilePath,
-                    message: cleanupError.message,
-                });
-            }
-        }
-
-        if (tempThumbnailPath && fs.existsSync(tempThumbnailPath)) {
-            try {
-                fs.unlinkSync(tempThumbnailPath);
-            } catch (cleanupError) {
-                logger.warn("Failed to clean up temporary thumbnail file", {
-                    filePath: tempThumbnailPath,
-                    message: cleanupError.message,
-                });
-            }
-        }
-    }
-}
-
 async function initDirectUpload(req, res) {
     try {
         const { fileName, mimeType, fileSize } = req.body;
         const normalizedSize = Number.parseInt(fileSize, 10);
-        const uploadSessionId = crypto.randomUUID();
+
+        if (!req.user?.id) {
+            return res.status(401).json({ error: "Unauthorized request." });
+        }
+
+        if (!folderId) {
+            logger.error("Drive folder id is not configured for upload init");
+            return res.status(500).json({
+                error: "Drive upload folder is not configured.",
+            });
+        }
 
         const metadata = {
             name: fileName,
             parents: [folderId],
             mimeType,
-            appProperties: {
-                vaultUploadSessionId: uploadSessionId,
-            },
         };
 
-        const driveResponse = await oauth2Client.request({
-            url: "https://www.googleapis.com/upload/drive/v3/files",
-            method: "POST",
-            params: {
+        const driveResponse = await drive.files.create(
+            {
                 uploadType: "resumable",
-                fields: "id,name,mimeType,size,webViewLink,thumbnailLink",
+                requestBody: metadata,
             },
-            headers: {
-                "Content-Type": "application/json; charset=UTF-8",
-                "X-Upload-Content-Type": mimeType,
-                "X-Upload-Content-Length": String(normalizedSize),
+            {
+                headers: {
+                    "X-Upload-Content-Type": mimeType,
+                    "X-Upload-Content-Length": String(normalizedSize),
+                },
             },
-            data: metadata,
-            // Resumable init can return an empty body, so avoid strict JSON parsing.
-            responseType: "text",
-        });
+        );
 
-        const rawHeaders = driveResponse?.headers;
+        const rawHeaders = driveResponse?.headers || {};
         const uploadUrl =
             typeof rawHeaders?.get === "function"
                 ? rawHeaders.get("location")
@@ -468,6 +336,7 @@ async function initDirectUpload(req, res) {
         }
 
         logger.info("Initialized resumable upload session", {
+            userId: req.user.id,
             fileName,
             mimeType,
             fileSize: normalizedSize,
@@ -476,7 +345,6 @@ async function initDirectUpload(req, res) {
         return res.status(200).json({
             success: true,
             uploadUrl,
-            uploadSessionId,
         });
     } catch (error) {
         logger.error("Failed to initialize direct upload session", {
@@ -494,111 +362,39 @@ async function initDirectUpload(req, res) {
 }
 
 async function finalizeDirectUpload(req, res) {
-    const uploadedThumbnail = req.files?.vaultThumbnail?.[0];
-    const tempThumbnailPath = uploadedThumbnail?.path;
-
     try {
-        const { fileName, mimeType, size, fileId, uploadSessionId } = req.body;
+        const { originalName, mimeType, size, driveFileId } = req.body;
         const normalizedSize = Number.parseInt(size, 10);
-        let resolvedFileId = String(fileId || "").trim();
 
-        // Recover the uploaded file id when the browser cannot read Drive's final response body.
-        if (!resolvedFileId && uploadSessionId) {
-            const escapedSessionId = String(uploadSessionId).replace(
-                /'/g,
-                "\\'",
-            );
-            const driveListResponse = await drive.files.list(
-                buildDriveListRequest({
-                    q: [
-                        `'${folderId}' in parents`,
-                        "trashed = false",
-                        `appProperties has { key='vaultUploadSessionId' and value='${escapedSessionId}' }`,
-                    ].join(" and "),
-                    fields: "files(id,name,mimeType,size,webViewLink,thumbnailLink,createdTime)",
-                    orderBy: "createdTime desc",
-                    pageSize: 1,
-                    spaces: "drive",
-                }),
-            );
-
-            resolvedFileId = driveListResponse?.data?.files?.[0]?.id || "";
+        if (!req.user?.id) {
+            return res.status(401).json({ error: "Unauthorized request." });
         }
 
-        if (!resolvedFileId) {
+        if (!driveFileId) {
             return res.status(400).json({
-                error: "Missing fileId and unable to resolve upload session.",
+                error: "driveFileId is required.",
             });
         }
 
-        let driveMetadata = null;
-        try {
-            const driveFileResponse = await drive.files.get({
-                fileId: resolvedFileId,
-                fields: "id,name,mimeType,size,webViewLink,thumbnailLink",
-            });
-            driveMetadata = driveFileResponse?.data || null;
-        } catch (driveError) {
-            logger.warn("Unable to fetch Drive metadata during finalize", {
-                driveFileId: resolvedFileId,
-                message: driveError.message,
-            });
-        }
-
-        let thumbnailDriveResponse = null;
-        if (uploadedThumbnail && tempThumbnailPath) {
-            try {
-                const baseName = path.parse(
-                    driveMetadata?.name || fileName || "file",
-                ).name;
-                const thumbnailName = `${baseName}-thumb.jpg`;
-
-                thumbnailDriveResponse = await drive.files.create({
-                    requestBody: {
-                        name: thumbnailName,
-                        parents: [folderId],
-                    },
-                    media: {
-                        mimeType: uploadedThumbnail.mimetype || "image/jpeg",
-                        body: fs.createReadStream(tempThumbnailPath),
-                    },
-                    fields: "id, webViewLink",
-                });
-            } catch (thumbnailError) {
-                logger.warn(
-                    "Unable to upload custom thumbnail during finalize",
-                    {
-                        driveFileId: resolvedFileId,
-                        message: thumbnailError.message,
-                    },
-                );
-            }
-        }
-
-        const newFileRecord = new File(
-            buildFileRecordData({
-                driveMetadata,
-                fileName,
-                driveFileId: resolvedFileId,
-                mimeType,
-                sizeBytes: normalizedSize,
-                thumbnailDriveFileId: thumbnailDriveResponse?.data?.id,
-                thumbnailMimeType: uploadedThumbnail?.mimetype,
-                thumbnailWebViewLink: thumbnailDriveResponse?.data?.webViewLink,
-            }),
-        );
+        const newFileRecord = new File({
+            userId: req.user.id,
+            originalName,
+            driveFileId,
+            mimeType,
+            sizeBytes: normalizedSize,
+        });
 
         await newFileRecord.save();
 
         logger.info("Direct upload finalized and persisted", {
+            userId: req.user.id,
             dbId: newFileRecord._id,
-            driveFileId: resolvedFileId,
+            driveFileId,
         });
 
-        return res.status(200).json({
+        return res.status(201).json({
             success: true,
-            message: "Direct upload finalized and recorded in Vault.",
-            fileData: newFileRecord,
+            file: newFileRecord,
         });
     } catch (error) {
         logger.error("Failed to finalize direct upload", {
@@ -610,20 +406,6 @@ async function finalizeDirectUpload(req, res) {
         return res.status(500).json({
             error: "Could not finalize direct upload.",
         });
-    } finally {
-        if (tempThumbnailPath && fs.existsSync(tempThumbnailPath)) {
-            try {
-                fs.unlinkSync(tempThumbnailPath);
-            } catch (cleanupError) {
-                logger.warn(
-                    "Failed to clean up temporary direct-upload thumbnail file",
-                    {
-                        filePath: tempThumbnailPath,
-                        message: cleanupError.message,
-                    },
-                );
-            }
-        }
     }
 }
 
@@ -966,7 +748,6 @@ async function deleteFile(req, res) {
 }
 
 module.exports = {
-    uploadFile,
     initDirectUpload,
     finalizeDirectUpload,
     syncDriveIndex,

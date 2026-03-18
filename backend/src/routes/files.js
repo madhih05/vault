@@ -1,13 +1,8 @@
 const express = require("express");
 const { body, query } = require("express-validator");
 const requireAuth = require("../middleware/auth");
-const {
-    handleVaultUpload,
-    handleDirectFinalizeUpload,
-} = require("../middleware/upload");
 const validate = require("../middleware/validation");
 const {
-    uploadFile,
     initDirectUpload,
     finalizeDirectUpload,
     syncUnindexedFiles,
@@ -19,7 +14,6 @@ const {
 
 const router = express.Router();
 
-router.post("/upload", requireAuth, handleVaultUpload, uploadFile);
 router.post("/files/sync", requireAuth, syncUnindexedFiles);
 router.post(
     "/upload/init",
@@ -54,16 +48,15 @@ router.post(
     "/upload/finalize",
     [
         requireAuth,
-        handleDirectFinalizeUpload,
-        body("fileName")
+        body("originalName")
             .isString()
-            .withMessage("fileName must be a string")
+            .withMessage("originalName must be a string")
             .bail()
             .trim()
             .notEmpty()
-            .withMessage("fileName is required")
+            .withMessage("originalName is required")
             .isLength({ max: 255 })
-            .withMessage("fileName must be at most 255 characters"),
+            .withMessage("originalName must be at most 255 characters"),
         body("mimeType")
             .isString()
             .withMessage("mimeType must be a string")
@@ -76,32 +69,13 @@ router.post(
         body("size")
             .isInt({ min: 1 })
             .withMessage("size must be a positive integer"),
-        body("fileId")
-            .optional({ nullable: true })
+        body("driveFileId")
             .isString()
-            .withMessage("fileId must be a string")
+            .withMessage("driveFileId must be a string")
             .bail()
-            .trim(),
-        body("uploadSessionId")
-            .optional({ nullable: true })
-            .isString()
-            .withMessage("uploadSessionId must be a string")
-            .bail()
-            .trim(),
-        body().custom((value) => {
-            const hasFileId = Boolean(
-                value?.fileId && String(value.fileId).trim(),
-            );
-            const hasUploadSessionId = Boolean(
-                value?.uploadSessionId && String(value.uploadSessionId).trim(),
-            );
-
-            if (!hasFileId && !hasUploadSessionId) {
-                throw new Error("Either fileId or uploadSessionId is required");
-            }
-
-            return true;
-        }),
+            .trim()
+            .notEmpty()
+            .withMessage("driveFileId is required"),
         validate,
     ],
     finalizeDirectUpload,
