@@ -121,6 +121,24 @@ const vaultUploadFields = upload.fields([
     { name: "vaultFile", maxCount: 1 },
     { name: "vaultThumbnail", maxCount: 1 },
 ]);
+const directFinalizeFields = upload.fields([
+    { name: "vaultThumbnail", maxCount: 1 },
+]);
+
+function handleMulterError(error, res) {
+    if (
+        error instanceof multer.MulterError &&
+        error.code === "LIMIT_FILE_SIZE"
+    ) {
+        return res.status(400).json({
+            error: "File too large. Maximum allowed size is 50MB.",
+        });
+    }
+
+    return res.status(error.statusCode || 400).json({
+        error: error.message || "Invalid upload request.",
+    });
+}
 
 function handleVaultUpload(req, res, next) {
     vaultUploadFields(req, res, (error) => {
@@ -135,23 +153,23 @@ function handleVaultUpload(req, res, next) {
             return next();
         }
 
-        if (
-            error instanceof multer.MulterError &&
-            error.code === "LIMIT_FILE_SIZE"
-        ) {
-            return res.status(400).json({
-                error: "File too large. Maximum allowed size is 50MB.",
-            });
+        return handleMulterError(error, res);
+    });
+}
+
+function handleDirectFinalizeUpload(req, res, next) {
+    directFinalizeFields(req, res, (error) => {
+        if (!error) {
+            return next();
         }
 
-        return res.status(error.statusCode || 400).json({
-            error: error.message || "Invalid upload request.",
-        });
+        return handleMulterError(error, res);
     });
 }
 
 module.exports = {
     handleVaultUpload,
+    handleDirectFinalizeUpload,
     allowedMimeTypes,
     allowedFileExtensions,
 };

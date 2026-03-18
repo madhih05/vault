@@ -9,6 +9,7 @@ const fileSchema = new mongoose.Schema({
     thumbnailWebViewLink: { type: String },
     webViewLink: { type: String }, // To view the full file
     mimeType: { type: String }, // e.g., 'image/jpeg' or 'video/mp4'
+    sizeBytes: { type: Number },
     uploadDate: { type: Date, default: Date.now },
 });
 

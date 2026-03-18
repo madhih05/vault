@@ -1,9 +1,10 @@
 const File = require("../models/File");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const mongoose = require("mongoose");
 const logger = require("../logger");
-const { drive, folderId } = require("../config/googleDrive");
+const { drive, folderId, oauth2Client } = require("../config/googleDrive");
 const {
     allowedMimeTypes,
     allowedFileExtensions,
@@ -113,6 +114,185 @@ function buildContentDisposition(dispositionType, fileName) {
         .replace(/\"/g, "");
 
     return `${dispositionType}; filename="${asciiSafeFileName}"; filename*=UTF-8''${encodeURIComponent(fileName || "download")}`;
+}
+
+function buildFileRecordData({
+    driveMetadata,
+    fileName,
+    driveFileId,
+    mimeType,
+    sizeBytes,
+    thumbnailDriveFileId,
+    thumbnailMimeType,
+    thumbnailWebViewLink,
+}) {
+    return {
+        originalName: driveMetadata?.name || fileName,
+        driveFileId: driveFileId || driveMetadata?.id,
+        thumbnailLink: driveMetadata?.thumbnailLink,
+        thumbnailDriveFileId,
+        thumbnailMimeType,
+        thumbnailWebViewLink,
+        webViewLink: driveMetadata?.webViewLink,
+        mimeType: driveMetadata?.mimeType || mimeType,
+        sizeBytes: Number.parseInt(driveMetadata?.size, 10) || sizeBytes,
+        uploadDate: driveMetadata?.createdTime
+            ? new Date(driveMetadata.createdTime)
+            : undefined,
+    };
+}
+
+function isVideoDriveFile(driveFile) {
+    const mimeType = String(driveFile?.mimeType || "").toLowerCase();
+    const fileName = String(driveFile?.name || "").toLowerCase();
+
+    return (
+        mimeType.startsWith("video/") ||
+        /\.(mp4|mov|avi|mkv|webm|m4v|3gp|3g2)$/i.test(fileName)
+    );
+}
+
+function buildDriveListRequest(overrides = {}) {
+    return {
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+        ...overrides,
+    };
+}
+
+async function syncDriveIndex(options = {}) {
+    const syncLabel = options.onlyVideos
+        ? "vault Drive video sync"
+        : "vault Drive sync";
+
+    if (!folderId) {
+        throw new Error("Drive folder is not configured on the backend.");
+    }
+
+    logger.info(`Starting ${syncLabel}`);
+
+    const existingRecords = await File.find(
+        {},
+        "driveFileId thumbnailDriveFileId",
+    ).lean();
+
+    const indexedDriveFileIds = new Set(
+        existingRecords.map((record) => record.driveFileId).filter(Boolean),
+    );
+    const indexedThumbnailIds = new Set(
+        existingRecords
+            .map((record) => record.thumbnailDriveFileId)
+            .filter(Boolean),
+    );
+
+    const operations = [];
+    let scannedCount = 0;
+    let addedCount = 0;
+    let pageToken = undefined;
+
+    do {
+        const driveListResponse = await drive.files.list(
+            buildDriveListRequest({
+                q: [`'${folderId}' in parents`, "trashed = false"].join(
+                    " and ",
+                ),
+                fields: "nextPageToken, files(id,name,mimeType,size,webViewLink,thumbnailLink,createdTime)",
+                orderBy: "createdTime desc",
+                pageSize: 1000,
+                pageToken,
+                spaces: "drive",
+            }),
+        );
+
+        const driveFiles = driveListResponse?.data?.files || [];
+        pageToken = driveListResponse?.data?.nextPageToken || undefined;
+
+        for (const driveFile of driveFiles) {
+            scannedCount += 1;
+
+            if (!driveFile?.id) {
+                continue;
+            }
+
+            if (
+                indexedDriveFileIds.has(driveFile.id) ||
+                indexedThumbnailIds.has(driveFile.id) ||
+                driveFile.mimeType === "application/vnd.google-apps.folder"
+            ) {
+                continue;
+            }
+
+            if (options.onlyVideos && !isVideoDriveFile(driveFile)) {
+                continue;
+            }
+
+            operations.push({
+                updateOne: {
+                    filter: { driveFileId: driveFile.id },
+                    update: {
+                        $setOnInsert: buildFileRecordData({
+                            driveMetadata: driveFile,
+                            driveFileId: driveFile.id,
+                        }),
+                    },
+                    upsert: true,
+                },
+            });
+
+            indexedDriveFileIds.add(driveFile.id);
+        }
+    } while (pageToken);
+
+    if (operations.length > 0) {
+        const syncResult = await File.bulkWrite(operations, {
+            ordered: false,
+        });
+        addedCount = syncResult?.upsertedCount || 0;
+    }
+
+    logger.info(`${syncLabel} completed`, {
+        scannedCount,
+        addedCount,
+    });
+
+    return {
+        scannedCount,
+        addedCount,
+    };
+}
+
+async function syncUnindexedFiles(req, res) {
+    try {
+        const { scannedCount, addedCount } = await syncDriveIndex();
+
+        return res.status(200).json({
+            success: true,
+            message:
+                addedCount > 0
+                    ? `Indexed ${addedCount} new file${addedCount === 1 ? "" : "s"} from Drive.`
+                    : "Vault index is already up to date.",
+            scannedCount,
+            addedCount,
+        });
+    } catch (error) {
+        const upstreamMessage =
+            error.response?.data?.error?.message ||
+            error.response?.data?.message ||
+            error.message;
+
+        logger.error("Vault Drive sync failed", {
+            message: upstreamMessage,
+            stack: error.stack,
+            status: error.response?.status,
+            details: error.response?.data,
+        });
+
+        return res.status(500).json({
+            error:
+                upstreamMessage ||
+                "Could not sync Drive files into the vault index.",
+        });
+    }
 }
 
 async function uploadFile(req, res) {
@@ -227,6 +407,221 @@ async function uploadFile(req, res) {
                     filePath: tempThumbnailPath,
                     message: cleanupError.message,
                 });
+            }
+        }
+    }
+}
+
+async function initDirectUpload(req, res) {
+    try {
+        const { fileName, mimeType, fileSize } = req.body;
+        const normalizedSize = Number.parseInt(fileSize, 10);
+        const uploadSessionId = crypto.randomUUID();
+
+        const metadata = {
+            name: fileName,
+            parents: [folderId],
+            mimeType,
+            appProperties: {
+                vaultUploadSessionId: uploadSessionId,
+            },
+        };
+
+        const driveResponse = await oauth2Client.request({
+            url: "https://www.googleapis.com/upload/drive/v3/files",
+            method: "POST",
+            params: {
+                uploadType: "resumable",
+                fields: "id,name,mimeType,size,webViewLink,thumbnailLink",
+            },
+            headers: {
+                "Content-Type": "application/json; charset=UTF-8",
+                "X-Upload-Content-Type": mimeType,
+                "X-Upload-Content-Length": String(normalizedSize),
+            },
+            data: metadata,
+            // Resumable init can return an empty body, so avoid strict JSON parsing.
+            responseType: "text",
+        });
+
+        const rawHeaders = driveResponse?.headers;
+        const uploadUrl =
+            typeof rawHeaders?.get === "function"
+                ? rawHeaders.get("location")
+                : rawHeaders?.location ||
+                  rawHeaders?.Location ||
+                  rawHeaders?.LOCATION;
+
+        if (!uploadUrl) {
+            logger.error("Drive resumable init succeeded without location", {
+                fileName,
+                mimeType,
+                status: driveResponse?.status,
+                headerKeys:
+                    typeof rawHeaders?.keys === "function"
+                        ? [...rawHeaders.keys()]
+                        : Object.keys(rawHeaders || {}),
+            });
+            return res.status(502).json({
+                error: "Failed to initialize resumable upload session.",
+            });
+        }
+
+        logger.info("Initialized resumable upload session", {
+            fileName,
+            mimeType,
+            fileSize: normalizedSize,
+        });
+
+        return res.status(200).json({
+            success: true,
+            uploadUrl,
+            uploadSessionId,
+        });
+    } catch (error) {
+        logger.error("Failed to initialize direct upload session", {
+            message: error.message,
+            stack: error.stack,
+            status: error.response?.status,
+            headerKeys: Object.keys(error.response?.headers || {}),
+            details: error.response?.data,
+        });
+
+        return res.status(500).json({
+            error: "Could not initialize direct upload session.",
+        });
+    }
+}
+
+async function finalizeDirectUpload(req, res) {
+    const uploadedThumbnail = req.files?.vaultThumbnail?.[0];
+    const tempThumbnailPath = uploadedThumbnail?.path;
+
+    try {
+        const { fileName, mimeType, size, fileId, uploadSessionId } = req.body;
+        const normalizedSize = Number.parseInt(size, 10);
+        let resolvedFileId = String(fileId || "").trim();
+
+        // Recover the uploaded file id when the browser cannot read Drive's final response body.
+        if (!resolvedFileId && uploadSessionId) {
+            const escapedSessionId = String(uploadSessionId).replace(
+                /'/g,
+                "\\'",
+            );
+            const driveListResponse = await drive.files.list(
+                buildDriveListRequest({
+                    q: [
+                        `'${folderId}' in parents`,
+                        "trashed = false",
+                        `appProperties has { key='vaultUploadSessionId' and value='${escapedSessionId}' }`,
+                    ].join(" and "),
+                    fields: "files(id,name,mimeType,size,webViewLink,thumbnailLink,createdTime)",
+                    orderBy: "createdTime desc",
+                    pageSize: 1,
+                    spaces: "drive",
+                }),
+            );
+
+            resolvedFileId = driveListResponse?.data?.files?.[0]?.id || "";
+        }
+
+        if (!resolvedFileId) {
+            return res.status(400).json({
+                error: "Missing fileId and unable to resolve upload session.",
+            });
+        }
+
+        let driveMetadata = null;
+        try {
+            const driveFileResponse = await drive.files.get({
+                fileId: resolvedFileId,
+                fields: "id,name,mimeType,size,webViewLink,thumbnailLink",
+            });
+            driveMetadata = driveFileResponse?.data || null;
+        } catch (driveError) {
+            logger.warn("Unable to fetch Drive metadata during finalize", {
+                driveFileId: resolvedFileId,
+                message: driveError.message,
+            });
+        }
+
+        let thumbnailDriveResponse = null;
+        if (uploadedThumbnail && tempThumbnailPath) {
+            try {
+                const baseName = path.parse(
+                    driveMetadata?.name || fileName || "file",
+                ).name;
+                const thumbnailName = `${baseName}-thumb.jpg`;
+
+                thumbnailDriveResponse = await drive.files.create({
+                    requestBody: {
+                        name: thumbnailName,
+                        parents: [folderId],
+                    },
+                    media: {
+                        mimeType: uploadedThumbnail.mimetype || "image/jpeg",
+                        body: fs.createReadStream(tempThumbnailPath),
+                    },
+                    fields: "id, webViewLink",
+                });
+            } catch (thumbnailError) {
+                logger.warn(
+                    "Unable to upload custom thumbnail during finalize",
+                    {
+                        driveFileId: resolvedFileId,
+                        message: thumbnailError.message,
+                    },
+                );
+            }
+        }
+
+        const newFileRecord = new File(
+            buildFileRecordData({
+                driveMetadata,
+                fileName,
+                driveFileId: resolvedFileId,
+                mimeType,
+                sizeBytes: normalizedSize,
+                thumbnailDriveFileId: thumbnailDriveResponse?.data?.id,
+                thumbnailMimeType: uploadedThumbnail?.mimetype,
+                thumbnailWebViewLink: thumbnailDriveResponse?.data?.webViewLink,
+            }),
+        );
+
+        await newFileRecord.save();
+
+        logger.info("Direct upload finalized and persisted", {
+            dbId: newFileRecord._id,
+            driveFileId: resolvedFileId,
+        });
+
+        return res.status(200).json({
+            success: true,
+            message: "Direct upload finalized and recorded in Vault.",
+            fileData: newFileRecord,
+        });
+    } catch (error) {
+        logger.error("Failed to finalize direct upload", {
+            message: error.message,
+            stack: error.stack,
+            details: error.response?.data,
+        });
+
+        return res.status(500).json({
+            error: "Could not finalize direct upload.",
+        });
+    } finally {
+        if (tempThumbnailPath && fs.existsSync(tempThumbnailPath)) {
+            try {
+                fs.unlinkSync(tempThumbnailPath);
+            } catch (cleanupError) {
+                logger.warn(
+                    "Failed to clean up temporary direct-upload thumbnail file",
+                    {
+                        filePath: tempThumbnailPath,
+                        message: cleanupError.message,
+                    },
+                );
             }
         }
     }
@@ -572,6 +967,10 @@ async function deleteFile(req, res) {
 
 module.exports = {
     uploadFile,
+    initDirectUpload,
+    finalizeDirectUpload,
+    syncDriveIndex,
+    syncUnindexedFiles,
     listFiles,
     viewFile,
     getThumbnail,

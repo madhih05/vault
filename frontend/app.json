@@ -1,24 +1,22 @@
 {
   "expo": {
-    "name": "Vault",
-    "slug": "vault",
-    "scheme": "vault",
+    "name": "Vault Mobile",
+    "slug": "vault-mobile",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "assetBundlePatterns": [
       "**/*"
     ],
-    "android": {
-      "package": "in.madhih.vault",
-      "permissions": [
-        "READ_MEDIA_IMAGES",
-        "READ_MEDIA_VIDEO",
-        "READ_MEDIA_AUDIO"
-      ]
+    "ios": {
+      "supportsTablet": true
     },
-    "extra": {
-      "apiBaseUrl": "https://secretvault.madhih.in"
-    }
+    "android": {},
+    "web": {
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-asset"
+    ]
   }
 }

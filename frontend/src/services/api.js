@@ -1,293 +1,223 @@
 import axios from "axios";
-import { compressMedia, isCompressibleMediaMimeType } from "./mediaCompressor";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
-const TOKEN_STORAGE_KEY = "vault_jwt";
-const secureFileCache = new Map();
+const TOKEN_KEY = "vault_jwt";
+const DEFAULT_BASE_URL = "http://localhost:3000";
+
+let inMemoryToken = null;
 
 function normalizeApiBaseUrl(rawBaseUrl) {
-    const normalized = (rawBaseUrl || "https://secretvault.madhih.in").replace(
-        /\/+$/,
-        "",
-    );
+    const trimmed = (rawBaseUrl || DEFAULT_BASE_URL).trim().replace(/\/+$/, "");
 
-    // const normalized = "http://10.101.105.234:3000";
-
-    if (normalized.endsWith("/api")) {
-        return normalized;
+    if (trimmed.endsWith("/api")) {
+        return trimmed;
     }
 
-    return `${normalized}/api`;
+    return `${trimmed}/api`;
 }
 
-export const API_BASE_URL = normalizeApiBaseUrl(
-    import.meta.env.VITE_API_BASE_URL,
-);
+const API_BASE_URL = normalizeApiBaseUrl(process.env.EXPO_PUBLIC_API_BASE_URL);
 
-export function buildApiUrl(pathname) {
-    const pathWithLeadingSlash = pathname.startsWith("/")
-        ? pathname
-        : `/${pathname}`;
-
-    return `${API_BASE_URL}${pathWithLeadingSlash}`;
-}
-
-export function buildSecureFileViewUrl(
-    fileId,
-    { download = false, token = getToken() } = {},
-) {
-    if (!fileId) {
-        throw new Error("A file ID is required to build a secure file URL.");
-    }
-
-    const url = new URL(
-        buildApiUrl(`/files/${encodeURIComponent(fileId)}/view`),
-    );
-
-    if (token) {
-        url.searchParams.set("token", token);
-    }
-
-    if (download) {
-        url.searchParams.set("download", "1");
-    }
-
-    return url.toString();
-}
-
-export const api = axios.create({
+const api = axios.create({
     baseURL: API_BASE_URL,
+    timeout: 30000,
 });
 
-export function getToken() {
-    return sessionStorage.getItem(TOKEN_STORAGE_KEY);
-}
-
-export function setToken(token) {
-    sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
-}
-
-export function clearToken() {
-    sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-    clearSecureFileCache();
-}
-
-export function isAuthenticated() {
-    return Boolean(getToken());
-}
-
-api.interceptors.request.use((config) => {
-    const token = getToken();
+api.interceptors.request.use(async (config) => {
+    const token = await getToken();
 
     if (token) {
-        config.headers = config.headers || {};
         config.headers["x-auth-token"] = token;
     }
 
     return config;
 });
 
-export async function login({ username, password }) {
-    const response = await api.post("/login", {
-        username,
-        password,
-    });
-
-    const token = response?.data?.token;
-    if (!token) {
-        throw new Error("Authentication token was not returned by the API.");
+export async function getToken() {
+    if (inMemoryToken) {
+        return inMemoryToken;
     }
 
-    setToken(token);
-    return token;
+    const storedToken = await AsyncStorage.getItem(TOKEN_KEY);
+    inMemoryToken = storedToken;
+    return storedToken;
 }
 
-export async function changePassword({ currentPassword, newPassword }) {
-    const response = await api.post("/change-password", {
+export async function setToken(token) {
+    inMemoryToken = token;
+    await AsyncStorage.setItem(TOKEN_KEY, token);
+}
+
+export async function clearToken() {
+    inMemoryToken = null;
+    await AsyncStorage.removeItem(TOKEN_KEY);
+}
+
+export function getApiBaseUrl() {
+    return API_BASE_URL;
+}
+
+export function buildSecureFileViewUrlSync(fileId, token, options = {}) {
+    const url = new URL(`${API_BASE_URL}/files/${fileId}/view`);
+
+    if (token) {
+        url.searchParams.set("token", token);
+    }
+
+    if (options.download) {
+        url.searchParams.set("download", "1");
+    }
+
+    return url.toString();
+}
+
+export function buildSecureThumbnailUrlSync(fileId, token) {
+    const url = new URL(`${API_BASE_URL}/files/${fileId}/thumbnail`);
+
+    if (token) {
+        url.searchParams.set("token", token);
+    }
+
+    return url.toString();
+}
+
+export async function buildSecureFileViewUrl(fileId, options = {}) {
+    const token = options.token || (await getToken());
+    return buildSecureFileViewUrlSync(fileId, token, options);
+}
+
+export async function buildSecureThumbnailUrl(fileId, tokenOverride) {
+    const token = tokenOverride || (await getToken());
+    return buildSecureThumbnailUrlSync(fileId, token);
+}
+
+export async function login(username, password) {
+    const response = await api.post("/login", { username, password });
+    const token = response.data?.token;
+
+    if (token) {
+        await setToken(token);
+    }
+
+    return response;
+}
+
+export function changePassword(currentPassword, newPassword) {
+    return api.post("/change-password", {
         currentPassword,
         newPassword,
     });
-
-    return response.data;
 }
 
-export async function resetPasswordWithKey({
-    username,
-    recoveryKey,
-    newPassword,
-}) {
-    const response = await api.post("/reset-with-key", {
-        username,
-        recoveryKey,
-        newPassword,
-    });
-
-    return response.data;
+export function resetPasswordWithKey(payload) {
+    return api.post("/reset-with-key", payload);
 }
 
-export async function listFiles({
-    page = 1,
-    limit = 50,
-    fileType = "",
-    fileName = "",
-} = {}) {
-    const response = await api.get("/files", {
-        params: {
-            page,
-            limit,
-            ...(fileType ? { fileType } : {}),
-            ...(fileName ? { fileName } : {}),
+export function listFiles(params) {
+    return api.get("/files", { params });
+}
+
+export function syncVaultIndex() {
+    return api.post(
+        "/files/sync",
+        {},
+        {
+            timeout: 0,
         },
-    });
-
-    return response.data;
+    );
 }
 
-export async function uploadVaultFile(
-    file,
-    thumbnailBlob,
-    onUploadProgress,
-    onStageChange,
-) {
-    const mimeType = String(file?.type || "").toLowerCase();
-    const isVideoFile = mimeType.startsWith("video/");
-    const shouldCompress = isCompressibleMediaMimeType(mimeType);
-
-    if (shouldCompress) {
-        onStageChange?.("compressing");
-    }
-
-    const fileToUpload = shouldCompress ? await compressMedia(file) : file;
-
-    if (
-        isVideoFile &&
-        (!fileToUpload ||
-            fileToUpload.size >= (file?.size || Number.MAX_SAFE_INTEGER))
-    ) {
-        throw new Error(
-            "Video was not compressed successfully. Upload has been canceled.",
-        );
-    }
-
-    onStageChange?.("uploading");
-
-    const postUpload = async (includeThumbnail) => {
-        const formData = new FormData();
-        formData.append("vaultFile", fileToUpload);
-
-        if (includeThumbnail && thumbnailBlob) {
-            const baseName = (fileToUpload?.name || "file").replace(
-                /\.[^.]+$/,
-                "",
-            );
-            formData.append(
-                "vaultThumbnail",
-                thumbnailBlob,
-                `${baseName}-thumb.jpg`,
-            );
-        }
-
-        return api.post("/upload", formData, {
-            headers: {
-                "Content-Type": "multipart/form-data",
-            },
-            ...(onUploadProgress
-                ? {
-                      onUploadProgress,
-                  }
-                : {}),
-        });
-    };
-
-    const isUnexpectedFieldError = (error) => {
-        const message =
-            error?.response?.data?.error ||
-            error?.response?.data?.message ||
-            error?.message ||
-            "";
-
-        return /unexpected field/i.test(String(message));
-    };
-
-    let response;
-
-    try {
-        response = await postUpload(true);
-    } catch (error) {
-        // Some older deployments only accept `vaultFile`; retry without thumbnail.
-        if (!thumbnailBlob || !isUnexpectedFieldError(error)) {
-            throw error;
-        }
-
-        response = await postUpload(false);
-    }
-
-    return response.data;
+export function deleteVaultFile(fileId) {
+    return api.delete(`/files/${fileId}`);
 }
 
-export async function deleteVaultFile(fileId) {
-    const response = await api.delete(`/files/${fileId}`);
-    return response.data;
-}
-
-export async function fetchSecureFileBlob(fileId) {
-    const response = await api.get(`/files/${fileId}/view`, {
-        responseType: "blob",
-    });
-
-    return {
-        blob: response.data,
-        contentType: response.headers["content-type"] || response.data?.type,
-    };
-}
-
-export async function fetchSecureFileObjectUrl(fileId) {
-    const cached = secureFileCache.get(fileId);
-    if (cached) {
-        return {
-            ...cached,
-            fromCache: true,
-        };
-    }
-
-    const { blob, contentType } = await fetchSecureFileBlob(fileId);
-    const objectUrl = URL.createObjectURL(blob);
-
-    const payload = {
-        blob,
-        objectUrl,
-        contentType,
-    };
-
-    secureFileCache.set(fileId, payload);
-
-    return {
-        ...payload,
-        fromCache: false,
-    };
-}
-
-export function evictSecureFileCache(fileId) {
-    const cached = secureFileCache.get(fileId);
-    if (!cached) {
+function appendFileToFormData(formData, fieldName, asset) {
+    if (!asset?.uri) {
         return;
     }
 
-    secureFileCache.delete(fileId);
-    revokeObjectUrl(cached.objectUrl);
+    formData.append(fieldName, {
+        uri: asset.uri,
+        name: asset.name || `${fieldName}.bin`,
+        type: asset.mimeType || "application/octet-stream",
+    });
 }
 
-export function clearSecureFileCache() {
-    for (const entry of secureFileCache.values()) {
-        revokeObjectUrl(entry.objectUrl);
+export function uploadVaultFile(asset, options = {}) {
+    const formData = new FormData();
+    appendFileToFormData(formData, "vaultFile", asset);
+
+    if (options.thumbnailAsset) {
+        appendFileToFormData(
+            formData,
+            "vaultThumbnail",
+            options.thumbnailAsset,
+        );
     }
 
-    secureFileCache.clear();
+    return api.post("/upload", formData, {
+        headers: {
+            "Content-Type": "multipart/form-data",
+        },
+        timeout: 0,
+        onUploadProgress: options.onUploadProgress,
+    });
 }
 
-export function revokeObjectUrl(objectUrl) {
-    if (objectUrl) {
-        URL.revokeObjectURL(objectUrl);
+export function initDirectUploadSession({ fileName, mimeType, fileSize }) {
+    return api.post(
+        "/upload/init",
+        {
+            fileName,
+            mimeType,
+            fileSize,
+        },
+        {
+            timeout: 0,
+        },
+    );
+}
+
+export function finalizeDirectUpload({
+    fileName,
+    mimeType,
+    size,
+    fileId,
+    uploadSessionId,
+    thumbnailAsset,
+}) {
+    const formData = new FormData();
+    formData.append("fileName", fileName);
+    formData.append("mimeType", mimeType || "application/octet-stream");
+    formData.append("size", String(size));
+
+    if (fileId) {
+        formData.append("fileId", fileId);
     }
+
+    if (uploadSessionId) {
+        formData.append("uploadSessionId", uploadSessionId);
+    }
+
+    if (thumbnailAsset) {
+        appendFileToFormData(formData, "vaultThumbnail", thumbnailAsset);
+    }
+
+    return api.post("/upload/finalize", formData, {
+        headers: {
+            "Content-Type": "multipart/form-data",
+        },
+        timeout: 0,
+    });
+}
+
+export function extractApiError(error, fallback) {
+    return (
+        error?.response?.data?.error ||
+        error?.response?.data?.message ||
+        error?.message ||
+        fallback
+    );
 }
 
 export default api;
