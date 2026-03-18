@@ -1,8 +1,14 @@
 const File = require("../models/File");
+const crypto = require("crypto");
 const path = require("path");
+const sharp = require("sharp");
+const { Readable } = require("stream");
 const mongoose = require("mongoose");
 const logger = require("../logger");
-const { drive, folderId } = require("../config/googleDrive");
+const { drive, folderId, oauth2Client } = require("../config/googleDrive");
+
+const THUMBNAIL_SIZE_PX = 100;
+const THUMBNAIL_JPEG_QUALITY = 68;
 
 const extensionToMimeType = {
     ".jpg": "image/jpeg",
@@ -140,6 +146,101 @@ function buildDriveListRequest(overrides = {}) {
         includeItemsFromAllDrives: true,
         ...overrides,
     };
+}
+
+function escapeDriveQueryLiteral(value) {
+    return String(value || "").replace(/'/g, "\\'");
+}
+
+function canGenerateImageThumbnail(fileRecord) {
+    const mimeType = String(fileRecord?.mimeType || "").toLowerCase();
+    const originalName = String(fileRecord?.originalName || "");
+    const extension = path.extname(originalName).toLowerCase();
+
+    const isImageMime = mimeType.startsWith("image/");
+    const unsupportedHeic = /^image\/hei(c|f)(-sequence)?$/i.test(mimeType);
+    const unsupportedHeicExt = /\.(heic|heif)$/i.test(extension);
+
+    return isImageMime && !unsupportedHeic && !unsupportedHeicExt;
+}
+
+async function generateSquareThumbnailBuffer(sourceBuffer) {
+    return sharp(sourceBuffer)
+        .rotate()
+        .resize(THUMBNAIL_SIZE_PX, THUMBNAIL_SIZE_PX, {
+            fit: "cover",
+            position: "centre",
+        })
+        .jpeg({
+            quality: THUMBNAIL_JPEG_QUALITY,
+            mozjpeg: true,
+            force: true,
+        })
+        .toBuffer();
+}
+
+async function createAndPersistThumbnail(fileRecord) {
+    if (!fileRecord?.driveFileId || !canGenerateImageThumbnail(fileRecord)) {
+        return fileRecord;
+    }
+
+    const driveFileStreamResponse = await drive.files.get(
+        {
+            fileId: fileRecord.driveFileId,
+            alt: "media",
+            supportsAllDrives: true,
+        },
+        {
+            responseType: "arraybuffer",
+        },
+    );
+
+    const sourceBuffer = Buffer.from(driveFileStreamResponse.data || []);
+    if (!sourceBuffer.length) {
+        throw new Error("Source file is empty, cannot generate thumbnail.");
+    }
+
+    const thumbnailBuffer = await generateSquareThumbnailBuffer(sourceBuffer);
+    const baseName = path.parse(fileRecord.originalName || "file").name;
+    const thumbnailName = `${baseName}-thumb-${THUMBNAIL_SIZE_PX}x${THUMBNAIL_SIZE_PX}.jpg`;
+
+    const createdThumbnailResponse = await drive.files.create({
+        requestBody: {
+            name: thumbnailName,
+            parents: folderId ? [folderId] : undefined,
+            mimeType: "image/jpeg",
+            appProperties: {
+                vaultThumbnailFor: fileRecord.driveFileId,
+            },
+        },
+        media: {
+            mimeType: "image/jpeg",
+            body: Readable.from(thumbnailBuffer),
+        },
+        fields: "id,mimeType,webViewLink",
+        supportsAllDrives: true,
+    });
+
+    const uploadedThumbnail = createdThumbnailResponse?.data || {};
+    if (!uploadedThumbnail.id) {
+        throw new Error("Thumbnail upload completed without a file id.");
+    }
+
+    const updatedRecord = await File.findByIdAndUpdate(
+        fileRecord._id,
+        {
+            $set: {
+                thumbnailDriveFileId: uploadedThumbnail.id,
+                thumbnailMimeType: uploadedThumbnail.mimeType || "image/jpeg",
+                thumbnailWebViewLink: uploadedThumbnail.webViewLink,
+            },
+        },
+        {
+            new: true,
+        },
+    );
+
+    return updatedRecord || fileRecord;
 }
 
 async function syncDriveIndex(options = {}) {
@@ -281,6 +382,7 @@ async function initDirectUpload(req, res) {
     try {
         const { fileName, mimeType, fileSize } = req.body;
         const normalizedSize = Number.parseInt(fileSize, 10);
+        const uploadSessionId = crypto.randomUUID();
 
         if (!req.user?.id) {
             return res.status(401).json({ error: "Unauthorized request." });
@@ -297,20 +399,27 @@ async function initDirectUpload(req, res) {
             name: fileName,
             parents: [folderId],
             mimeType,
+            appProperties: {
+                vaultUploadSessionId: uploadSessionId,
+            },
         };
 
-        const driveResponse = await drive.files.create(
-            {
+        const driveResponse = await oauth2Client.request({
+            url: "https://www.googleapis.com/upload/drive/v3/files",
+            method: "POST",
+            params: {
                 uploadType: "resumable",
-                requestBody: metadata,
+                fields: "id",
             },
-            {
-                headers: {
-                    "X-Upload-Content-Type": mimeType,
-                    "X-Upload-Content-Length": String(normalizedSize),
-                },
+            headers: {
+                "Content-Type": "application/json; charset=UTF-8",
+                "X-Upload-Content-Type": mimeType,
+                "X-Upload-Content-Length": String(normalizedSize),
             },
-        );
+            data: metadata,
+            // Drive resumable-init often returns an empty body.
+            responseType: "text",
+        });
 
         const rawHeaders = driveResponse?.headers || {};
         const uploadUrl =
@@ -345,10 +454,16 @@ async function initDirectUpload(req, res) {
         return res.status(200).json({
             success: true,
             uploadUrl,
+            uploadSessionId,
         });
     } catch (error) {
+        const upstreamMessage =
+            error.response?.data?.error?.message ||
+            error.response?.data?.message ||
+            error.message;
+
         logger.error("Failed to initialize direct upload session", {
-            message: error.message,
+            message: upstreamMessage,
             stack: error.stack,
             status: error.response?.status,
             headerKeys: Object.keys(error.response?.headers || {}),
@@ -356,45 +471,195 @@ async function initDirectUpload(req, res) {
         });
 
         return res.status(500).json({
-            error: "Could not initialize direct upload session.",
+            error:
+                upstreamMessage ||
+                "Could not initialize direct upload session.",
+            details: upstreamMessage,
         });
     }
 }
 
 async function finalizeDirectUpload(req, res) {
     try {
-        const { originalName, mimeType, size, driveFileId } = req.body;
+        const { originalName, mimeType, size, driveFileId, uploadSessionId } =
+            req.body;
         const normalizedSize = Number.parseInt(size, 10);
+        let resolvedDriveFileId = String(driveFileId || "").trim();
 
         if (!req.user?.id) {
             return res.status(401).json({ error: "Unauthorized request." });
         }
 
-        if (!driveFileId) {
+        if (!resolvedDriveFileId && !uploadSessionId) {
             return res.status(400).json({
-                error: "driveFileId is required.",
+                error: "Either driveFileId or uploadSessionId is required.",
             });
         }
 
-        const newFileRecord = new File({
+        if (!resolvedDriveFileId && uploadSessionId) {
+            const escapedSessionId = escapeDriveQueryLiteral(uploadSessionId);
+
+            // Drive search indexing is eventually consistent. Use more retries
+            // and a lightweight backoff before falling back to a name/size lookup.
+            for (let attempt = 1; attempt <= 12; attempt += 1) {
+                const driveLookupResponse = await drive.files.list(
+                    buildDriveListRequest({
+                        q: [
+                            `'${folderId}' in parents`,
+                            "trashed = false",
+                            `appProperties has { key='vaultUploadSessionId' and value='${escapedSessionId}' }`,
+                        ].join(" and "),
+                        fields: "files(id,name,mimeType,size,webViewLink,thumbnailLink,createdTime)",
+                        orderBy: "createdTime desc",
+                        pageSize: 1,
+                        spaces: "drive",
+                    }),
+                );
+
+                const matchedFile =
+                    driveLookupResponse?.data?.files?.[0] || null;
+                resolvedDriveFileId = matchedFile?.id || "";
+
+                if (resolvedDriveFileId) {
+                    break;
+                }
+
+                await new Promise((resolve) =>
+                    setTimeout(resolve, Math.min(350 * attempt, 2200)),
+                );
+            }
+
+            if (!resolvedDriveFileId) {
+                const escapedFileName = escapeDriveQueryLiteral(originalName);
+                const fallbackLookupResponse = await drive.files.list(
+                    buildDriveListRequest({
+                        q: [
+                            `'${folderId}' in parents`,
+                            "trashed = false",
+                            `name = '${escapedFileName}'`,
+                        ].join(" and "),
+                        fields: "files(id,name,mimeType,size,webViewLink,thumbnailLink,createdTime)",
+                        orderBy: "createdTime desc",
+                        pageSize: 12,
+                        spaces: "drive",
+                    }),
+                );
+
+                const candidates = fallbackLookupResponse?.data?.files || [];
+                const fifteenMinutesAgo = Date.now() - 15 * 60 * 1000;
+
+                for (const candidate of candidates) {
+                    const candidateCreatedAt = candidate?.createdTime
+                        ? new Date(candidate.createdTime).getTime()
+                        : 0;
+                    const candidateSize = Number.parseInt(candidate?.size, 10);
+                    const recentlyCreated =
+                        candidateCreatedAt >= fifteenMinutesAgo;
+                    const sizeMatches =
+                        !Number.isFinite(normalizedSize) ||
+                        normalizedSize <= 0 ||
+                        candidateSize === normalizedSize;
+
+                    if (!recentlyCreated || !sizeMatches || !candidate?.id) {
+                        continue;
+                    }
+
+                    const existingFile = await File.findOne({
+                        driveFileId: candidate.id,
+                    })
+                        .select("_id")
+                        .lean();
+
+                    if (!existingFile) {
+                        resolvedDriveFileId = candidate.id;
+                        break;
+                    }
+                }
+            }
+
+            if (!resolvedDriveFileId) {
+                return res.status(404).json({
+                    error: "Uploaded Drive file was not found for this upload session yet.",
+                });
+            }
+        }
+
+        let driveMetadata = null;
+        try {
+            const driveFileResponse = await drive.files.get({
+                fileId: resolvedDriveFileId,
+                fields: "id,name,mimeType,size,webViewLink,thumbnailLink,createdTime",
+            });
+            driveMetadata = driveFileResponse?.data || null;
+        } catch (driveError) {
+            logger.warn(
+                "Unable to fetch Drive metadata during finalize (file may still be accessible)",
+                {
+                    driveFileId: resolvedDriveFileId,
+                    message: driveError.message,
+                },
+            );
+        }
+
+        const fileData = buildFileRecordData({
+            driveMetadata,
             userId: req.user.id,
-            originalName,
-            driveFileId,
+            fileName: originalName,
+            driveFileId: resolvedDriveFileId,
             mimeType,
             sizeBytes: normalizedSize,
         });
 
-        await newFileRecord.save();
+        const newFileRecord = await File.findOneAndUpdate(
+            { driveFileId: resolvedDriveFileId },
+            {
+                $set: {
+                    userId: req.user.id,
+                    ...fileData,
+                },
+            },
+            {
+                new: true,
+                upsert: true,
+                setDefaultsOnInsert: true,
+            },
+        );
+
+        let finalizedFileRecord = newFileRecord;
+
+        if (
+            !newFileRecord.thumbnailDriveFileId &&
+            canGenerateImageThumbnail(newFileRecord)
+        ) {
+            try {
+                finalizedFileRecord =
+                    await createAndPersistThumbnail(newFileRecord);
+            } catch (thumbnailError) {
+                // Upload success must not fail if thumbnail generation fails.
+                logger.warn(
+                    "Upload finalized, but thumbnail generation failed",
+                    {
+                        driveFileId: resolvedDriveFileId,
+                        dbId: newFileRecord._id,
+                        message: thumbnailError.message,
+                    },
+                );
+            }
+        }
 
         logger.info("Direct upload finalized and persisted", {
             userId: req.user.id,
-            dbId: newFileRecord._id,
-            driveFileId,
+            dbId: finalizedFileRecord._id,
+            driveFileId: resolvedDriveFileId,
+            hasThumbnail: Boolean(
+                finalizedFileRecord.thumbnailDriveFileId ||
+                finalizedFileRecord.thumbnailLink,
+            ),
         });
 
         return res.status(201).json({
             success: true,
-            file: newFileRecord,
+            file: finalizedFileRecord,
         });
     } catch (error) {
         logger.error("Failed to finalize direct upload", {
@@ -644,9 +909,32 @@ async function getThumbnail(req, res) {
         }
 
         if (!fileRecord.thumbnailDriveFileId) {
-            return res.status(404).json({
-                error: "No uploaded thumbnail is available for this file.",
-            });
+            if (canGenerateImageThumbnail(fileRecord)) {
+                try {
+                    const updatedRecord =
+                        await createAndPersistThumbnail(fileRecord);
+                    fileRecord.thumbnailDriveFileId =
+                        updatedRecord.thumbnailDriveFileId;
+                    fileRecord.thumbnailMimeType =
+                        updatedRecord.thumbnailMimeType;
+                } catch (thumbnailError) {
+                    logger.warn("Lazy thumbnail generation failed", {
+                        dbId: fileRecord._id,
+                        driveFileId: fileRecord.driveFileId,
+                        message: thumbnailError.message,
+                    });
+                }
+            }
+
+            if (!fileRecord.thumbnailDriveFileId && fileRecord.thumbnailLink) {
+                return res.redirect(fileRecord.thumbnailLink);
+            }
+
+            if (!fileRecord.thumbnailDriveFileId) {
+                return res.status(404).json({
+                    error: "No thumbnail is available for this file.",
+                });
+            }
         }
 
         const driveResponse = await drive.files.get(

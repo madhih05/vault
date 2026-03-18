@@ -21,3 +21,5 @@ pnpm-debug.log*
 Thumbs.db
 
 frontend/android
+
+backend/getToken.js

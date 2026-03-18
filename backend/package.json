@@ -21,7 +21,8 @@
     "express-validator": "^7.3.1",
     "googleapis": "^171.4.0",
     "jsonwebtoken": "^9.0.3",
-    "mongoose": "^9.2.4"
+    "mongoose": "^9.2.4",
+    "sharp": "^0.34.4"
   },
   "devDependencies": {
     "jest": "^30.2.0",

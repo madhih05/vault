@@ -4,7 +4,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const BASE_URL = process.env.BASE_URL || "http://localhost:3000/api";
+const BASE_URL = process.env.BASE_URL || "https://secretvault.madhih.in/api";
 const USERNAME = process.env.TEST_USERNAME || "madhih";
 const PASSWORD = process.env.TEST_PASSWORD || "madhih030702?";
 

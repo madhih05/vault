@@ -70,12 +70,35 @@ router.post(
             .isInt({ min: 1 })
             .withMessage("size must be a positive integer"),
         body("driveFileId")
+            .optional({ nullable: true })
             .isString()
             .withMessage("driveFileId must be a string")
             .bail()
             .trim()
-            .notEmpty()
-            .withMessage("driveFileId is required"),
+            .notEmpty(),
+        body("uploadSessionId")
+            .optional({ nullable: true })
+            .isString()
+            .withMessage("uploadSessionId must be a string")
+            .bail()
+            .trim()
+            .notEmpty(),
+        body().custom((value) => {
+            const hasDriveFileId = Boolean(
+                value?.driveFileId && String(value.driveFileId).trim(),
+            );
+            const hasUploadSessionId = Boolean(
+                value?.uploadSessionId && String(value.uploadSessionId).trim(),
+            );
+
+            if (!hasDriveFileId && !hasUploadSessionId) {
+                throw new Error(
+                    "Either driveFileId or uploadSessionId is required",
+                );
+            }
+
+            return true;
+        }),
         validate,
     ],
     finalizeDirectUpload,

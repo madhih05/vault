@@ -2,7 +2,7 @@ import axios from "axios";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const TOKEN_KEY = "vault_jwt";
-const DEFAULT_BASE_URL = "http://localhost:3000";
+const DEFAULT_BASE_URL = "https://secretvault.madhih.in";
 
 let inMemoryToken = null;
 
@@ -16,7 +16,9 @@ function normalizeApiBaseUrl(rawBaseUrl) {
     return `${trimmed}/api`;
 }
 
-const API_BASE_URL = normalizeApiBaseUrl(process.env.EXPO_PUBLIC_API_BASE_URL);
+const API_BASE_URL = normalizeApiBaseUrl(
+    process.env.EXPO_PUBLIC_API_BASE_URL || DEFAULT_BASE_URL,
+);
 
 const api = axios.create({
     baseURL: API_BASE_URL,
@@ -131,39 +133,6 @@ export function deleteVaultFile(fileId) {
     return api.delete(`/files/${fileId}`);
 }
 
-function appendFileToFormData(formData, fieldName, asset) {
-    if (!asset?.uri) {
-        return;
-    }
-
-    formData.append(fieldName, {
-        uri: asset.uri,
-        name: asset.name || `${fieldName}.bin`,
-        type: asset.mimeType || "application/octet-stream",
-    });
-}
-
-export function uploadVaultFile(asset, options = {}) {
-    const formData = new FormData();
-    appendFileToFormData(formData, "vaultFile", asset);
-
-    if (options.thumbnailAsset) {
-        appendFileToFormData(
-            formData,
-            "vaultThumbnail",
-            options.thumbnailAsset,
-        );
-    }
-
-    return api.post("/upload", formData, {
-        headers: {
-            "Content-Type": "multipart/form-data",
-        },
-        timeout: 0,
-        onUploadProgress: options.onUploadProgress,
-    });
-}
-
 export function initDirectUploadSession({ fileName, mimeType, fileSize }) {
     return api.post(
         "/upload/init",
@@ -178,37 +147,64 @@ export function initDirectUploadSession({ fileName, mimeType, fileSize }) {
     );
 }
 
+export async function uploadToDriveResumable({
+    uploadUrl,
+    mimeType,
+    fileBlob,
+}) {
+    const response = await fetch(uploadUrl, {
+        method: "PUT",
+        headers: {
+            "Content-Type": mimeType || "application/octet-stream",
+        },
+        body: fileBlob,
+    });
+
+    const rawBody = await response.text();
+    let parsedBody = null;
+
+    try {
+        parsedBody = rawBody ? JSON.parse(rawBody) : null;
+    } catch (_error) {
+        parsedBody = null;
+    }
+
+    if (!response.ok) {
+        const message =
+            parsedBody?.error?.message ||
+            parsedBody?.message ||
+            rawBody ||
+            "Direct upload to Google Drive failed.";
+        throw new Error(message);
+    }
+
+    return {
+        status: response.status,
+        driveFileId: parsedBody?.id,
+        data: parsedBody,
+    };
+}
+
 export function finalizeDirectUpload({
-    fileName,
+    originalName,
     mimeType,
     size,
-    fileId,
+    driveFileId,
     uploadSessionId,
-    thumbnailAsset,
 }) {
-    const formData = new FormData();
-    formData.append("fileName", fileName);
-    formData.append("mimeType", mimeType || "application/octet-stream");
-    formData.append("size", String(size));
-
-    if (fileId) {
-        formData.append("fileId", fileId);
-    }
-
-    if (uploadSessionId) {
-        formData.append("uploadSessionId", uploadSessionId);
-    }
-
-    if (thumbnailAsset) {
-        appendFileToFormData(formData, "vaultThumbnail", thumbnailAsset);
-    }
-
-    return api.post("/upload/finalize", formData, {
-        headers: {
-            "Content-Type": "multipart/form-data",
+    return api.post(
+        "/upload/finalize",
+        {
+            originalName,
+            mimeType: mimeType || "application/octet-stream",
+            size,
+            driveFileId,
+            uploadSessionId,
         },
-        timeout: 0,
-    });
+        {
+            timeout: 0,
+        },
+    );
 }
 
 export function extractApiError(error, fallback) {

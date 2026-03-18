@@ -23,9 +23,11 @@ import {
     changePassword,
     deleteVaultFile,
     extractApiError,
+    finalizeDirectUpload,
+    initDirectUploadSession,
     listFiles,
     syncVaultIndex,
-    uploadVaultFile,
+    uploadToDriveResumable,
 } from "../services/api";
 import colors from "../theme/colors";
 
@@ -278,6 +280,11 @@ export default function VaultScreen() {
 
     async function runUploadQueue(initialQueue) {
         for (const queuedItem of initialQueue) {
+            let currentUploadSessionId = "";
+            let currentResolvedSize = Number(queuedItem.asset.size) || 1;
+            let currentResolvedMimeType =
+                queuedItem.asset.mimeType || "application/octet-stream";
+
             setUploadQueue((current) =>
                 current.map((item) =>
                     item.id === queuedItem.id
@@ -292,27 +299,73 @@ export default function VaultScreen() {
             );
 
             try {
-                await uploadVaultFile(queuedItem.asset, {
-                    onUploadProgress: (event) => {
-                        if (!event?.total) {
-                            return;
-                        }
+                const sourceResponse = await fetch(queuedItem.asset.uri);
 
-                        const progress = Math.min(
-                            100,
-                            Math.round((event.loaded / event.total) * 100),
-                        );
-                        setUploadQueue((current) =>
-                            current.map((item) =>
-                                item.id === queuedItem.id
-                                    ? {
-                                          ...item,
-                                          progress,
-                                      }
-                                    : item,
-                            ),
-                        );
-                    },
+                if (!sourceResponse.ok) {
+                    throw new Error("Unable to read selected file.");
+                }
+
+                const fileBlob = await sourceResponse.blob();
+                const resolvedSize =
+                    Number(queuedItem.asset.size) > 0
+                        ? Number(queuedItem.asset.size)
+                        : fileBlob.size;
+                const resolvedMimeType =
+                    queuedItem.asset.mimeType || "application/octet-stream";
+
+                currentResolvedSize = resolvedSize;
+                currentResolvedMimeType = resolvedMimeType;
+
+                const initResponse = await initDirectUploadSession({
+                    fileName: queuedItem.asset.name || "vault-file",
+                    mimeType: resolvedMimeType,
+                    fileSize: resolvedSize,
+                });
+
+                const uploadUrl = initResponse?.data?.uploadUrl;
+                const uploadSessionId = initResponse?.data?.uploadSessionId;
+                currentUploadSessionId = uploadSessionId || "";
+
+                if (!uploadUrl) {
+                    throw new Error("Upload session URL was not returned.");
+                }
+
+                setUploadQueue((current) =>
+                    current.map((item) =>
+                        item.id === queuedItem.id
+                            ? {
+                                  ...item,
+                                  progress: 35,
+                              }
+                            : item,
+                    ),
+                );
+
+                const driveUploadResult = await uploadToDriveResumable({
+                    uploadUrl,
+                    mimeType: resolvedMimeType,
+                    fileBlob,
+                });
+
+                setUploadQueue((current) =>
+                    current.map((item) =>
+                        item.id === queuedItem.id
+                            ? {
+                                  ...item,
+                                  progress: 80,
+                              }
+                            : item,
+                    ),
+                );
+
+                const driveFileId = driveUploadResult?.driveFileId;
+
+                await finalizeDirectUpload({
+                    originalName: queuedItem.asset.name || "vault-file",
+                    mimeType: resolvedMimeType,
+                    size: resolvedSize,
+                    driveFileId,
+                    uploadSessionId,
                 });
 
                 setUploadQueue((current) =>
@@ -327,6 +380,54 @@ export default function VaultScreen() {
                     ),
                 );
             } catch (error) {
+                const isFetchFailure = String(error?.message || "")
+                    .toLowerCase()
+                    .includes("failed to fetch");
+
+                if (isFetchFailure && currentUploadSessionId) {
+                    try {
+                        for (let attempt = 1; attempt <= 6; attempt += 1) {
+                            try {
+                                await finalizeDirectUpload({
+                                    originalName:
+                                        queuedItem.asset.name || "vault-file",
+                                    mimeType: currentResolvedMimeType,
+                                    size: currentResolvedSize,
+                                    uploadSessionId: currentUploadSessionId,
+                                });
+                                break;
+                            } catch (finalizeError) {
+                                const status = finalizeError?.response?.status;
+                                const shouldRetry =
+                                    status === 404 && attempt < 6;
+
+                                if (!shouldRetry) {
+                                    throw finalizeError;
+                                }
+
+                                await new Promise((resolve) =>
+                                    setTimeout(resolve, 600 * attempt),
+                                );
+                            }
+                        }
+
+                        setUploadQueue((current) =>
+                            current.map((item) =>
+                                item.id === queuedItem.id
+                                    ? {
+                                          ...item,
+                                          status: "completed",
+                                          progress: 100,
+                                      }
+                                    : item,
+                            ),
+                        );
+                        continue;
+                    } catch (_ignoredRecoveryError) {
+                        // Fall through to normal error handling.
+                    }
+                }
+
                 setUploadQueue((current) =>
                     current.map((item) =>
                         item.id === queuedItem.id
@@ -345,7 +446,16 @@ export default function VaultScreen() {
             }
         }
 
-        await refreshActiveTab();
+        try {
+            await refreshActiveTab();
+        } catch (refreshError) {
+            setErrorBanner(
+                extractApiError(
+                    refreshError,
+                    "Upload completed but gallery refresh failed.",
+                ),
+            );
+        }
     }
 
     async function handleUploadPress() {
